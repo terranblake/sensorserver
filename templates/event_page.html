@@ -1,0 +1,132 @@
+{% extends "base.html" %}
+
+{% macro display_sensor_tree(node, path='') %}
+    {% if node is mapping %}
+        <ul>
+            {% for key, value in node.items()|sort %}
+                {% set current_path = path + '.' + key if path else key %}
+                <li>
+                    <strong>{{ key }}:</strong>
+                    {{ display_sensor_tree(value, current_path) }}
+                </li>
+            {% endfor %}
+        </ul>
+    {% elif node.__class__.__name__ == 'SensorState' %}
+        <span class="badge bg-secondary" id="badge-{{ current_path }}">{{ node.inferred_state }}</span> {# Badge with unique ID #}
+        <!-- Checkbox will go here, using current_path -->
+        <input type="checkbox" name="selected_sensors" value="{{ current_path }}" id="sensor-{{ current_path }}" class="form-check-input ms-2">
+        <label for="sensor-{{ current_path }}" class="form-check-label"></label> {# Empty label for spacing/alignment #}
+        <small class="text-muted ms-1">[Path: {{ current_path }}]</small> {# DEBUG PATH #}
+    {% else %}
+         {{ node }} {# Fallback for unexpected data #}
+    {% endif %}
+{% endmacro %}
+
+{% block title %}Event Annotation{% endblock %}
+
+{% block content %}
+<div class="bg-light p-5 rounded">
+    <h1>Sensor State & Event Annotation</h1>
+    <p class="lead">Current sensor states update below. Select sensors involved and add a description to log an event.</p>
+    
+    <div class="row">
+        <div class="col-md-12"> {# Full width column for the form #}
+            <h2>Log Event</h2>
+            <form action="/submit_event" method="post">
+                <div class="mb-3">
+                    <label for="description" class="form-label">Description</label>
+                    <textarea class="form-control" id="description" name="description" rows="3" required></textarea>
+                </div>
+                <div class="mb-3 sensor-tree">
+                    <label class="form-label">Select Involved Sensors (State updates in real-time):</label>
+                    {# Call the macro here, inside the form #}
+                    {{ display_sensor_tree(sensor_state_data) }}
+                </div>
+                <button type="submit" class="btn btn-primary">Submit Event</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // We need to target the container where the macro outputs the first <ul>
+    const sensorTreeContainer = document.querySelector('.sensor-tree'); 
+
+    // --- Update Logic using specific IDs ---
+    function updateNodeValue(path, state) {
+        // Find the badge span directly by its unique ID
+        const badge = document.getElementById(`badge-${path}`);
+        // console.log(`Trying to update badge-${path} to ${state}`); // DEBUG - Can be very noisy
+        if (badge) {
+            if (badge.textContent !== state) {
+                // console.log(`Updating badge-${path} from ${badge.textContent} to ${state}`); // DEBUG
+                badge.textContent = state;
+                // Optional: Visual feedback
+                badge.classList.add('text-bg-warning'); 
+                setTimeout(() => badge.classList.remove('text-bg-warning'), 500);
+            }
+        } else {
+             console.warn(`Badge element not found for path: ${path}`); // Keep this warning
+        }
+    }
+
+    function traverseStateData(node, currentPath = '') {
+        if (typeof node === 'object' && node !== null) {
+            // Check if it's a SensorState object by looking for expected keys
+            // NOTE: This relies on the structure returned by /state/data. 
+            // If sensor_logic.py changes SensorState, this might need adjustment.
+            if (node.hasOwnProperty('inferred_state') && node.hasOwnProperty('last_timestamp')) {
+                // Only update if we have a path (should always be true unless root is state)
+                if(currentPath) {
+                   updateNodeValue(currentPath, node.inferred_state || 'N/A');
+                }
+            } else {
+                // Recursively traverse nested objects (like android, sensor, motion etc.)
+                for (const key in node) {
+                    if (node.hasOwnProperty(key)) {
+                        const newPath = currentPath ? `${currentPath}.${key}` : key;
+                        traverseStateData(node[key], newPath);
+                    }
+                }
+            }
+        }
+    }
+    // --- End Update Logic ---
+
+    async function updateSensorTree() {
+        try {
+            const response = await fetch('/state/data');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const stateData = await response.json();
+            
+            // Traverse the new data and update existing DOM elements
+            // console.log("Received state data:", stateData); // DEBUG
+            traverseStateData(stateData);
+
+        } catch (error) {
+            console.error('Error updating sensor tree:', error);
+            // Optionally display an error message in the UI
+            const errorElement = sensorTreeContainer.querySelector('.update-error');
+            if(errorElement) {
+                 errorElement.textContent = `Error updating status: ${error.message}`;
+            } else {
+                const p = document.createElement('p');
+                p.className = 'text-danger update-error';
+                p.textContent = `Error updating status: ${error.message}`;
+                sensorTreeContainer.prepend(p);
+            }
+        }
+    }
+
+    // Update the tree every 2 seconds
+    setInterval(updateSensorTree, 2000); 
+
+    // Initial update on load (optional, Jinja renders initial state)
+    // document.addEventListener('DOMContentLoaded', updateSensorTree);
+
+</script>
+{% endblock %}
