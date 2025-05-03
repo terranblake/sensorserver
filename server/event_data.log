@@ -1,1 +1,0 @@
-{"timestamp": "2025-05-03T18:03:21.931329", "ip_address": "127.0.0.1", "description": "network scan complete", "selected_sensors": ["android.sensor.network.bluetooth_scan", "android.sensor.network.network_scan", "android.sensor.network.wifi_scan"]}
