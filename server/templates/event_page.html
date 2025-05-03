@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+
+{% macro display_sensor_tree(node, path='') %}
+    {% if node is mapping %}
+        <ul>
+            {% for key, value in node.items()|sort %}
+                {% set current_path = path + '.' + key if path else key %}
+                <li>
+                    <strong>{{ key }}:</strong>
+                    {{ display_sensor_tree(value, current_path) }}
+                </li>
+            {% endfor %}
+        </ul>
+    {% elif node.__class__.__name__ == 'SensorState' %}
+        <span class="badge bg-secondary" id="badge-{{ current_path }}">{{ node.inferred_state }}</span> {# Badge with unique ID #}
+        <!-- Checkbox will go here, using current_path -->
+        <input type="checkbox" name="selected_sensors" value="{{ current_path }}" id="sensor-{{ current_path }}" class="form-check-input ms-2">
+        <label for="sensor-{{ current_path }}" class="form-check-label"></label> {# Empty label for spacing/alignment #}
+    {% else %}
+         {{ node }} {# Fallback for unexpected data #}
+    {% endif %}
+{% endmacro %}
+
+{% block title %}Event Annotation{% endblock %}
+
+{% block content %}
+<div class="bg-light p-5 rounded">
+    <h1>Sensor State & Event Annotation</h1>
+    <p class="lead">Current sensor states update below. Select sensors involved and add a description to log an event.</p>
+    
+    <div class="row">
+        <div class="col-md-12"> {# Full width column for the form #}
+            <h2>Log Event</h2>
+            <form action="/submit_event" method="post">
+                <div class="mb-3">
+                    <label for="description" class="form-label">Description</label>
+                    <textarea class="form-control" id="description" name="description" rows="3" required></textarea>
+                </div>
+                <div class="mb-3 sensor-tree">
+                    <label class="form-label">Select Involved Sensors (State updates in real-time):</label>
+                    {# Call the macro here, inside the form #}
+                    {# {{ display_sensor_tree(sensor_state_data) }} -- REMOVED #}
+                    <div id="sensor-tree-content"></div> {# Container for JS rendering #}
+                    <p class="text-danger update-error" style="display: none;"></p> {# Placeholder for JS errors #}
+                </div>
+                <button type="submit" class="btn btn-primary">Submit Event</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const sensorTreeContent = document.getElementById('sensor-tree-content');
+    const errorDisplayElement = document.querySelector('.update-error');
+
+    // Function to recursively build HTML string for the sensor tree
+    function buildSensorTreeHtml(node, path = '') {
+        let html = '';
+        if (typeof node === 'object' && node !== null) {
+            // Check if it's a SensorState object (received as plain dict from API)
+            if (node.hasOwnProperty('inferred_state') && node.hasOwnProperty('last_timestamp')) {
+                const currentPath = path;
+                const state = node.inferred_state || 'N/A';
+                const badgeId = `badge-${currentPath}`;
+                const checkboxId = `sensor-${currentPath}`;
+                
+                // Build the list item content directly
+                html += `<span class="badge bg-secondary" id="${badgeId}">${state}</span>`;
+                html += `<input type="checkbox" name="selected_sensors" value="${currentPath}" id="${checkboxId}" class="form-check-input ms-2">`;
+                html += `<label for="${checkboxId}" class="form-check-label"></label>`;
+            } else {
+                // It's a regular dictionary node (group or category)
+                html += '<ul>';
+                const sortedKeys = Object.keys(node).sort();
+                for (const key of sortedKeys) {
+                    const value = node[key];
+                    const newPath = path ? `${path}.${key}` : key;
+                    // Build list item and recurse
+                    html += `<li><strong>${key}:</strong> ${buildSensorTreeHtml(value, newPath)}</li>`;
+                }
+                html += '</ul>';
+            }
+        } else {
+            // Fallback for unexpected data types
+            html += String(node);
+        }
+        return html;
+    }
+
+    async function updateSensorTree() {
+        // 1. Get currently checked sensors
+        const checkedSensors = new Set();
+        sensorTreeContent.querySelectorAll('input[name="selected_sensors"]:checked').forEach(checkbox => {
+            checkedSensors.add(checkbox.value);
+        });
+
+        try {
+            // 2. Fetch latest data
+            const response = await fetch('/state/data');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const stateData = await response.json();
+            
+            // 3. Build new HTML tree
+            const newHtml = buildSensorTreeHtml(stateData);
+
+            // 4. Replace content
+            sensorTreeContent.innerHTML = newHtml;
+
+            // 5. Restore checked state
+            checkedSensors.forEach(sensorPath => {
+                const checkbox = document.getElementById(`sensor-${sensorPath}`);
+                if (checkbox) {
+                    checkbox.checked = true;
+                }
+            });
+            
+            // Clear any previous error message on success
+            if(errorDisplayElement) errorDisplayElement.style.display = 'none';
+
+        } catch (error) {
+            console.error('Error updating sensor tree:', error);
+            // Display error message in the UI
+            if(errorDisplayElement) {
+                 errorDisplayElement.textContent = `Error updating status: ${error.message}`;
+                 errorDisplayElement.style.display = 'block';
+            }
+        }
+    }
+
+    // Update the tree every 2 seconds
+    setInterval(updateSensorTree, 2000); 
+
+    // Initial update on load
+    document.addEventListener('DOMContentLoaded', updateSensorTree);
+
+</script>
+{% endblock %}
