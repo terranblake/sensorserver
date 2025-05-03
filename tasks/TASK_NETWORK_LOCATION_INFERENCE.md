@@ -1,25 +1,47 @@
-Task: Implement WiFi and Bluetooth Scanning
-Overview
-Implement functionality within the Android sensor server application to scan for visible WiFi networks and discoverable Bluetooth devices. This data, including BSSID/SSID/RSSI for WiFi and MAC Address/Name/RSSI for Bluetooth, should be collected periodically and exposed to the server pipeline alongside existing sensor data to enable network-based location inference.
+# TASK: Network Location Inference
 
-Requirements
-The application must be able to initiate scans for visible WiFi networks.
+**Goal:** Implement WiFi and Bluetooth scanning functionality to enable network-based location inference.
 
-The application must be able to initiate discovery for nearby Bluetooth devices.
+**Status:** Completed
 
-For each scanned WiFi network, capture the BSSID, SSID, and RSSI.
+## Overview
+Implement functionality within the Android sensor server application to scan for visible WiFi networks and discoverable Bluetooth devices. This data, including BSSID/SSID/RSSI for WiFi and MAC Address/Name/RSSI for Bluetooth, is collected periodically and exposed to the server pipeline alongside existing sensor data to enable network-based location inference.
 
-For each discovered Bluetooth device, capture the MAC address, name (if available), and RSSI.
+## Requirements
+- [x] The application can initiate scans for visible WiFi networks.
+- [x] The application can initiate discovery for nearby Bluetooth devices.
+- [x] For each scanned WiFi network, capture the BSSID, SSID, and RSSI.
+- [x] For each discovered Bluetooth device, capture the MAC address, name (if available), and RSSI.
+- [x] Handle necessary Android runtime permissions (ACCESS_FINE_LOCATION, BLUETOOTH_SCAN etc.) required for scanning.
+- [x] Ensure Location Services is enabled on the device, as required for WiFi scan results on modern Android versions.
+- [x] Expose the collected WiFi and Bluetooth data to the application's server logging/API mechanism.
+- [x] Manage the scanning process respecting the Android lifecycle (start scans when active, stop when paused/backgrounded to save battery).
 
-Handle necessary Android runtime permissions (ACCESS_FINE_LOCATION, BLUETOOTH_SCAN etc.) required for scanning.
+## Implementation Details
+1. **NetworkSensorManager**
+   - Manages WiFi scanning using WifiManager and Bluetooth scanning using BluetoothAdapter
+   - Implements broadcast receivers to handle scan results
+   - Properly formats scan data into structured JSON
 
-Ensure Location Services is enabled on the device, as required for WiFi scan results on modern Android versions.
+2. **SensorWebSocketServer Integration**
+   - Added handling of network sensor types (wifi_scan, bluetooth_scan, network_scan)
+   - Properly starts and stops network scanning when clients connect/disconnect
+   - Formats network scan results with correct type information for multiple clients
 
-Expose the collected WiFi and Bluetooth data to the application's server logging/API mechanism.
+3. **Permission Handling**
+   - Added necessary permissions to AndroidManifest.xml
+   - Implements runtime permission requests for Location and Bluetooth
 
-Manage the scanning process respecting the Android lifecycle (start scans when active, stop when paused/backgrounded to save battery).
+## Testing
+- The application successfully requests necessary WiFi and Bluetooth permissions.
+- The application checks for and indicates the status of Location Services.
+- The application can initiate WiFi scans and receive scan results containing BSSID, SSID, and RSSI for multiple networks.
+- The application can initiate Bluetooth discovery and receive results containing MAC address, name (if available), and RSSI for discoverable devices.
+- The collected WiFi and Bluetooth data is correctly formatted and sent to the server pipeline.
+- The server successfully receives and logs/processes the WiFi and Bluetooth network data.
+- Starting and stopping the relevant Fragment/Activity correctly manages the scanning process (starting on active, stopping on pause).
 
-Design
+## Design
 The implementation will utilize the Android WifiManager and BluetoothAdapter system services.
 
 WifiManager will be used to start WiFi scans, and a BroadcastReceiver will listen for SCAN_RESULTS_AVAILABLE_ACTION to process the results.
@@ -38,7 +60,7 @@ Scanning will be managed within a Fragment or Activity's lifecycle methods (onRe
 
 ⚠️ DESIGN REVIEW CHECKPOINT: Before proceeding to implementation, please confirm this design approach.
 
-Implementation Plan
+## Implementation Plan
 Add Permissions:
 
 Add required permissions (ACCESS_WIFI_STATE, CHANGE_WIFI_STATE, BLUETOOTH, BLUETOOTH_ADMIN, ACCESS_FINE_LOCATION, BLUETOOTH_SCAN for S+) to AndroidManifest.xml.
@@ -103,7 +125,7 @@ Update the server-side data ingestion to handle the new android.networks.wifi an
 
 ⚠️ IMPLEMENTATION REVIEW CHECKPOINT: After outlining implementation details but before writing code.
 
-Technical Constraints
+## Technical Constraints
 Requires Android device with WiFi and Bluetooth hardware.
 
 Requires user to grant Location and Bluetooth runtime permissions.
@@ -116,7 +138,7 @@ WiFi scanning can be subject to platform-level throttling, limiting scan frequen
 
 Background scanning requires careful implementation (e.g., Foreground Service, WorkManager) to avoid system limitations and battery drain.
 
-Testing Strategy
+## Testing Strategy
 Unit tests:
 
 Test mapping of Android system scan results (ScanResult, BluetoothDevice) to custom data classes (WifiScanResult, BluetoothScanResult).
@@ -141,7 +163,7 @@ Check the server logs/API endpoint to confirm that WiFi and Bluetooth data is be
 
 Test starting/stopping the app and moving it to the background to ensure scanning behavior is as expected and battery drain is reasonable.
 
-Acceptance Criteria
+## Acceptance Criteria
 [x] The application successfully requests necessary WiFi and Bluetooth permissions.
 
 [x] The application checks for and indicates the status of Location Services.
@@ -156,7 +178,7 @@ Acceptance Criteria
 
 [x] Starting and stopping the relevant Fragment/Activity correctly manages the scanning process (starting on active, stopping on pause).
 
-References
+## References
 Android Developer Documentation: WifiManager
 
 Android Developer Documentation: BluetoothAdapter
