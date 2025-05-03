@@ -1,20 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <menu xmlns:android="http://schemas.android.com/apk/res/android">
 
-
     <item
         android:id="@+id/navigation_server"
-        android:icon="@drawable/ic_baseline_graphic_eq_24"
+        android:icon="@drawable/ic_router"
         android:title="Server" />
+
+    <item
+        android:id="@+id/navigation_sensors"
+        android:icon="@drawable/ic_sensors"
+        android:title="Sensors" />
 
     <item
         android:id="@+id/navigation_connections"
         android:icon="@drawable/ic_connections"
-        android:title="@string/title_connections" />
+        android:title="Connections" />
 
     <item
-        android:id="@+id/navigation_available_sensors"
-        android:icon="@drawable/ic_baseline_more_horiz_24"
-        android:title="@string/title_available_sensors" />
+        android:id="@+id/navigation_network_scan"
+        android:icon="@drawable/ic_wifi_tethering" 
+        android:title="@string/network_scan_title" />
 
 </menu>

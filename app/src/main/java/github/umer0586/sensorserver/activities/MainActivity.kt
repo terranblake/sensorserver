@@ -14,21 +14,19 @@ import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.Fragment
-import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
-import androidx.viewpager2.adapter.FragmentStateAdapter
+import androidx.navigation.fragment.NavHostFragment
+import androidx.navigation.ui.AppBarConfiguration
+import androidx.navigation.ui.setupActionBarWithNavController
+import androidx.navigation.ui.setupWithNavController
 import com.google.android.material.navigation.NavigationBarView
 import com.permissionx.guolindev.PermissionX
 import github.umer0586.sensorserver.R
 import github.umer0586.sensorserver.databinding.ActivityMainBinding
-import github.umer0586.sensorserver.fragments.AvailableSensorsFragment
-import github.umer0586.sensorserver.fragments.ConnectionsFragment
-import github.umer0586.sensorserver.fragments.ServerFragment
 import github.umer0586.sensorserver.service.HttpServerStateListener
 import github.umer0586.sensorserver.service.HttpService
-import github.umer0586.sensorserver.service.WebsocketService
 import github.umer0586.sensorserver.service.ServiceBindHelper
+import github.umer0586.sensorserver.service.WebsocketService
 import github.umer0586.sensorserver.webserver.HttpServerInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -36,7 +34,6 @@ import java.lang.Exception
 
 class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListener
 {
-
     private lateinit var actionBarDrawerToggle: ActionBarDrawerToggle
 
     private lateinit var websocketServiceBindHelper: ServiceBindHelper
@@ -49,13 +46,7 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
 
     companion object
     {
-
         private val TAG: String = MainActivity::class.java.simpleName
-
-        // Fragments Positions
-        private const val POSITION_SERVER_FRAGMENT = 0
-        private const val POSITION_CONNECTIONS_FRAGMENT = 1
-        private const val POSITION_AVAILABLE_SENSORS_FRAGMENT = 2
     }
 
     override fun onCreate(savedInstanceState: Bundle?)
@@ -63,21 +54,27 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
         super.onCreate(savedInstanceState)
 
         binding = ActivityMainBinding.inflate(layoutInflater)
-       //toolBarBinding = ToolbarBinding.inflate(layoutInflater)
-
         setContentView(binding.root)
 
         // Set a Toolbar to replace the ActionBar.
         setSupportActionBar(binding.toolbar.root)
 
+        // Passing each menu ID as a set of Ids because each
+        // menu should be considered as top level destinations.
+        val appBarConfiguration = AppBarConfiguration(
+            setOf(
+                R.id.navigation_server, R.id.navigation_sensors, R.id.navigation_connections, R.id.navigation_network_scan
+            )
+        )
 
-        binding.dashboard.bottomNavView.selectedItemId = R.id.navigation_server
-        binding.dashboard.bottomNavView.setOnItemSelectedListener(this)
+        val navHostFragment = supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as NavHostFragment
+        val navController = navHostFragment.navController
 
+        setupActionBarWithNavController(navController, appBarConfiguration)
+        binding.bottomNavView.setupWithNavController(navController)
 
-
-
-
+        binding.bottomNavView.selectedItemId = R.id.navigation_server
+        binding.bottomNavView.setOnItemSelectedListener(this)
 
         websocketServiceBindHelper = ServiceBindHelper(
             context = applicationContext,
@@ -95,32 +92,32 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
 
         httpServiceBindHelper.onServiceConnected(this::onHttpServiceConnected)
 
-        binding.dashboard.viewPager.isUserInputEnabled = false
-        binding.dashboard.viewPager.adapter = MyFragmentStateAdapter(this)
-
-
         actionBarDrawerToggle = ActionBarDrawerToggle(this, binding.drawerLayout, R.string.nav_open, R.string.nav_close)
         binding.drawerLayout.addDrawerListener(actionBarDrawerToggle)
         actionBarDrawerToggle.syncState()
 
-
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
 
+        // Force initialize the HTTP server option in navigation drawer
+        val httpServerAddressParentView = (binding.drawerNavigationView.menu
+                .findItem(R.id.nav_drawer_http_server_address).actionView as RelativeLayout)
+        httpServerAddressParentView.visibility = View.VISIBLE
+        
+        val httpServerSwitch = (binding.drawerNavigationView.menu.findItem(R.id.nav_drawer_http_server_switch).actionView as RelativeLayout).getChildAt(0) as SwitchCompat
+        httpServerSwitch.visibility = View.VISIBLE
 
         binding.drawerNavigationView.setNavigationItemSelectedListener { menuItem ->
-
             if (menuItem.itemId == R.id.nav_drawer_about)
                 startActivity(Intent(this, AboutActivity::class.java))
 
             if (menuItem.itemId == R.id.nav_drawer_settings)
-                startActivity( Intent(this,SettingsActivity::class.java)  )
+                startActivity(Intent(this,SettingsActivity::class.java))
 
             if (menuItem.itemId == R.id.nav_drawer_device_axis)
-                startActivity( Intent(this, DeviceAxisActivity::class.java ) )
+                startActivity(Intent(this, DeviceAxisActivity::class.java))
 
             if (menuItem.itemId == R.id.nav_drawer_touch_sensors)
-                startActivity( Intent(this, TouchScreenActivity::class.java) )
-
+                startActivity(Intent(this, TouchScreenActivity::class.java))
 
             false
         }
@@ -136,32 +133,30 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
         else super.onOptionsItemSelected(item)
     }
 
-
     private fun onWebsocketServiceConnected(binder: IBinder)
     {
         val localBinder = binder as WebsocketService.LocalBinder
         websocketService = localBinder.service
 
-        websocketService?.let{ setConnectionCountBadge( it.getConnectionCount() ) }
+        websocketService?.let{ setConnectionCountBadge(it.getConnectionCount()) }
 
         websocketService?.onConnectionsCountChange { count ->
-
             lifecycleScope.launch(Dispatchers.Main) {
                 setConnectionCountBadge(count)
             }
         }
-
     }
 
-    private fun onHttpServiceConnected(binder: IBinder){
-
-
+    private fun onHttpServiceConnected(binder: IBinder) {
         val httpServerAddressParentView = (binding.drawerNavigationView.menu
                 .findItem(R.id.nav_drawer_http_server_address).actionView as RelativeLayout)
         val httpServerAddress = httpServerAddressParentView.findViewById<TextView>(R.id.server_address)
 
         val httpServerSwitch = (binding.drawerNavigationView.menu.findItem(R.id.nav_drawer_http_server_switch).actionView as RelativeLayout).getChildAt(0) as SwitchCompat
 
+        // Force visibility of HTTP server elements even if server isn't started yet
+        httpServerAddressParentView.visibility = View.VISIBLE
+        httpServerSwitch.visibility = View.VISIBLE
 
         val showServerAddress : ((HttpServerInfo) -> Unit) = {info ->
             httpServerAddressParentView.visibility = View.VISIBLE
@@ -169,10 +164,9 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
                 visibility = View.VISIBLE
                 text = info.baseUrl
             }
-
         }
 
-        val hideServerAddress  = {
+        val hideServerAddress = {
             httpServerAddressParentView.visibility = View.GONE
             httpServerAddress.visibility = View.INVISIBLE
         }
@@ -205,7 +199,6 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
                     httpServerSwitch.isChecked = false
                     Log.e(TAG,exception.message.toString())
                 }
-
             }
 
             override fun onRunning(httpServerInfo: HttpServerInfo) {
@@ -214,15 +207,19 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
                     httpServerSwitch.isChecked = true
                 }
             }
-
         })
 
+        // Force service check and auto-start if not running
         httpService?.checkState()
+        if (httpService?.isServerRunning != true) {
+            Log.i(TAG, "HTTP server not running, auto-starting")
+            val intent = Intent(applicationContext, HttpService::class.java)
+            ContextCompat.startForegroundService(applicationContext, intent)
+        }
 
         httpServerSwitch.setOnCheckedChangeListener { _, isChecked ->
             val isServerRunning = httpService?.isServerRunning ?: false
             if(isChecked && !isServerRunning){
-
                 // Whether user grant this permission or not we will start service anyway
                 // If permission is not granted foreground notification will not be shown
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -243,7 +240,6 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
         }
     }
 
-
     override fun onPause()
     {
         super.onPause()
@@ -254,62 +250,45 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
         httpService?.setServerStateListener(null)
     }
 
-
     private fun setConnectionCountBadge(totalConnections: Int)
     {
         if (totalConnections > 0)
-            binding.dashboard.bottomNavView.getOrCreateBadge(R.id.navigation_connections).number = totalConnections
+            binding.bottomNavView.getOrCreateBadge(R.id.navigation_connections).number = totalConnections
         else
-            binding.dashboard.bottomNavView.removeBadge(R.id.navigation_connections)
+            binding.bottomNavView.removeBadge(R.id.navigation_connections)
     }
 
-    override fun onNavigationItemSelected(item: MenuItem): Boolean
-    {
-        when (item.itemId)
-        {
-            R.id.navigation_available_sensors ->
-            {
-                binding.dashboard.viewPager.setCurrentItem(POSITION_AVAILABLE_SENSORS_FRAGMENT, false)
+    override fun onNavigationItemSelected(item: MenuItem): Boolean {
+        val navHostFragment = supportFragmentManager.findFragmentById(R.id.nav_host_fragment) as NavHostFragment
+        val navController = navHostFragment.navController
+        
+        // Clear the back stack first to avoid navigation issues
+        navController.popBackStack(navController.graph.startDestinationId, false)
+        
+        when (item.itemId) {
+            R.id.navigation_sensors -> {
+                navController.navigate(R.id.navigation_sensors)
                 supportActionBar?.title = "Available Sensors"
                 return true
             }
-
-            R.id.navigation_connections ->
-            {
-                binding.dashboard.viewPager.setCurrentItem(POSITION_CONNECTIONS_FRAGMENT, false)
-                supportActionBar?.title = "Connections"
+            R.id.navigation_connections -> {
+                navController.navigate(R.id.navigation_connections)
+                supportActionBar?.title = "Connections" 
                 return true
             }
-
-            R.id.navigation_server ->
-            {
-                binding.dashboard.viewPager.setCurrentItem(POSITION_SERVER_FRAGMENT, false)
+            R.id.navigation_server -> {
+                navController.navigate(R.id.navigation_server)
                 supportActionBar?.title = "Sensor Server"
+                return true
+            }
+            R.id.navigation_network_scan -> {
+                // Adding log to debug
+                Log.d(TAG, "Navigating to NetworkScanFragment")
+                navController.navigate(R.id.navigation_network_scan)
+                supportActionBar?.title = "Network Scan"
                 return true
             }
         }
         return false
     }
-
-    private inner class MyFragmentStateAdapter(fragmentActivity: FragmentActivity) : FragmentStateAdapter(fragmentActivity)
-    {
-
-        override fun createFragment(pos: Int): Fragment
-        {
-            when (pos)
-            {
-                POSITION_SERVER_FRAGMENT -> return ServerFragment()
-                POSITION_CONNECTIONS_FRAGMENT -> return ConnectionsFragment()
-                POSITION_AVAILABLE_SENSORS_FRAGMENT -> return AvailableSensorsFragment()
-            }
-            return ServerFragment()
-        }
-
-        override fun getItemCount(): Int
-        {
-            return 3
-        }
-    }
-
-
 }

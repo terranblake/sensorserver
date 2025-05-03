@@ -6,6 +6,7 @@ import android.hardware.SensorManager
 import com.yanzhenjie.andserver.annotation.GetMapping
 import com.yanzhenjie.andserver.annotation.RestController
 import com.yanzhenjie.andserver.http.HttpResponse
+import github.umer0586.sensorserver.sensors.NetworkSensorManager
 import github.umer0586.sensorserver.setting.AppSettings
 import github.umer0586.sensorserver.util.JsonUtil
 
@@ -28,15 +29,31 @@ class RequestController {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val availableSensors: List<Sensor> = sensorManager.getSensorList(Sensor.TYPE_ALL).filter{ it.reportingMode != Sensor.REPORTING_MODE_ONE_SHOT}
 
-        return JsonUtil.toJSON(
-                availableSensors.map { sensor ->
-                    val map = mutableMapOf<String,Any>()
-                    map["name"] = sensor.name
-                    map["type"] = sensor.stringType
-                    return@map map
-                }
-        )
+        // Convert standard sensors to map entries
+        val sensorsList = availableSensors.map { sensor ->
+            val map = mutableMapOf<String, Any>()
+            map["name"] = sensor.name
+            map["type"] = sensor.stringType
+            map
+        }.toMutableList()
 
+        // Add custom network sensors
+        sensorsList.add(mutableMapOf(
+            "name" to "WiFi Scanner",
+            "type" to NetworkSensorManager.TYPE_WIFI_SCAN
+        ))
+        
+        sensorsList.add(mutableMapOf(
+            "name" to "Bluetooth Scanner",
+            "type" to NetworkSensorManager.TYPE_BLUETOOTH_SCAN
+        ))
+        
+        sensorsList.add(mutableMapOf(
+            "name" to "Network Scanner",
+            "type" to NetworkSensorManager.TYPE_NETWORK_SCAN
+        ))
+
+        return JsonUtil.toJSON(sensorsList)
     }
 
 }

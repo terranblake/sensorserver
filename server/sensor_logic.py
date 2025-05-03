@@ -78,6 +78,10 @@ def get_sensor_group(sensor_name):
     if 'brightness' in name_lower: return 'brightness'
     if 'camera_vsync' in name_lower: return 'meta'
     if 'dynamic_sensor_meta' in name_lower: return 'meta'
+    # Network sensors
+    if 'wifi_scan' in name_lower: return 'network'
+    if 'bluetooth_scan' in name_lower: return 'network'
+    if 'network_scan' in name_lower: return 'network'
     # Fallback group
     return 'other'
 
@@ -87,6 +91,7 @@ def normalize_key(sensor_type):
         return "android.sensor.gps"
     elif sensor_type.startswith("com.google.sensor."):
         return sensor_type.replace("com.google.sensor.", "android.sensor.", 1)
+    # Network sensors should already have the android.sensor prefix
     return sensor_type
 
 def update_nested_data_with_grouping(data_dict, normalized_key_parts, value, is_status=False):
@@ -233,6 +238,26 @@ def update_inferred_state(normalized_sensor_path: str, state: SensorState):
                      state.inferred_state = "Waiting for valid GPS coords"
             else: # Only current value
                 state.inferred_state = f"GPS Fix (Acc: {state.last_value.get('accuracy', 'N/A'):.0f}m)"
+        # Network sensor types
+        elif base_name == 'wifi_scan':
+            if isinstance(state.last_value, list):
+                count = len(state.last_value) if state.last_value else 0
+                state.inferred_state = f"WiFi Networks: {count}"
+            else:
+                state.inferred_state = "Scanning for WiFi networks..."
+        elif base_name == 'bluetooth_scan':
+            if isinstance(state.last_value, list):
+                count = len(state.last_value) if state.last_value else 0
+                state.inferred_state = f"Bluetooth Devices: {count}"
+            else:
+                state.inferred_state = "Scanning for Bluetooth devices..."
+        elif base_name == 'network_scan':
+            if isinstance(state.last_value, dict):
+                wifi_count = len(state.last_value.get('wifiResults', [])) 
+                bt_count = len(state.last_value.get('bluetoothResults', []))
+                state.inferred_state = f"WiFi: {wifi_count}, BT: {bt_count}"
+            else:
+                state.inferred_state = "Scanning for networks..."
         # --- Generic State for Others --- (Only update if not handled above and not an event sensor)
         elif not is_event_sensor and state.inferred_state.startswith("Waiting"): # Only set once
              state.inferred_state = "Receiving Data"

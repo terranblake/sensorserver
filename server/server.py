@@ -11,14 +11,14 @@ import os
 import time
 
 # --- Import Sensor Logic ---
-# Assuming sensor_logic.py is in the same directory or Python path
-import sensor_logic 
+# sensor_logic.py is in the same directory
+import sensor_logic
 
 # --- Configuration ---
 # TODO: Move to a config file or environment variables
-SERVER_ADDRESS = "10.0.0.2"
-HTTP_PORT = 9091
-WS_PORT = 8081
+SERVER_ADDRESS = "10.0.0.2"  # This needs to match your Android device's actual IP
+HTTP_PORT = 9090  # Android app's DEFAULT_HTTP_PORT_NO in AppSettings.kt
+WS_PORT = 8080    # Android app's DEFAULT_WEBSOCKET_PORT_NO in AppSettings.kt
 HTTP_ENDPOINT = f"http://{SERVER_ADDRESS}:{HTTP_PORT}/sensors"
 WS_BASE_URI = f"ws://{SERVER_ADDRESS}:{WS_PORT}"
 RAW_LOG_FILE = "raw_data.log"

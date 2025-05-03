@@ -82,8 +82,17 @@ class HttpService : Service() {
                     }
             )
         }
-
-
+        
+        // Auto-start HTTP server on app launch to fix missing left pane
+        if (!isServerRunning) {
+            Log.i(TAG, "Auto-starting HTTP server on service creation")
+            val startIntent = Intent(applicationContext, HttpService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                applicationContext.startForegroundService(startIntent)
+            } else {
+                applicationContext.startService(startIntent)
+            }
+        }
     }
 
     fun onMessage(intent: Intent)

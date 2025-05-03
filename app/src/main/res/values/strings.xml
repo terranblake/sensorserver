@@ -26,6 +26,14 @@
     <string name="nav_open">Open</string>
     <string name="nav_close">Close</string>
 
-
+    <string name="permissions_needed">Required permissions not granted.</string>
+    <string name="permissions_granted">Permissions granted.</string>
+    <string name="permissions_denied">Permissions denied.</string>
+    <string name="permission_rationale_location_bluetooth">Location and Bluetooth permissions are required to scan for nearby networks and devices.</string>
+    <string name="location_services_enabled">Location services enabled.</string>
+    <string name="location_services_disabled">Location services disabled. WiFi and Bluetooth scanning require location services.</string>
+    <string name="location_enable_prompt">Please enable Location Services for network scanning.</string>
+    <string name="enable">Enable</string>
+    <string name="network_scan_title">Network Scan</string>
 
 </resources>

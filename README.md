@@ -229,3 +229,73 @@ Scan following QR code with bitcoin wallet app to send bitcoins
 [<img src="https://github.com/umer0586/SensorServer/assets/35717992/11cd8194-6e9c-469c-a09f-06fd1bc93acd" height="200">](https://github.com/umer0586/SensorServer/assets/35717992/11cd8194-6e9c-469c-a09f-06fd1bc93acd)
 
 
+## Build & Test
+
+### Building the App
+
+1.  **Prerequisites:**
+    *   Android Studio (latest stable version recommended)
+    *   Android SDK configured
+    *   Git
+
+2.  **Clone the Repository:**
+    ```bash
+    git clone https://github.com/umer0586/SensorServer.git
+    cd SensorServer
+    ```
+
+3.  **Open in Android Studio:**
+    *   Open Android Studio.
+    *   Select "Open an Existing Project".
+    *   Navigate to the cloned `SensorServer` directory and open it.
+    *   Allow Gradle to sync and download dependencies.
+
+4.  **Build APK:**
+    *   **Debug APK:**
+        *   Go to `Build` > `Build Bundle(s) / APK(s)` > `Build APK(s)`.
+        *   The debug APK will be located in `app/build/outputs/apk/debug/`.
+    *   **Release APK (Optional - Requires Signing):**
+        *   Go to `Build` > `Generate Signed Bundle / APK`.
+        *   Follow the prompts to create or use an existing keystore and build a signed release APK.
+
+5.  **Build via Command Line (Gradle Wrapper):**
+    *   Ensure you have executable permissions for the Gradle wrapper:
+      ```bash
+      chmod +x ./gradlew
+      ```
+    *   **Assemble Debug APK:**
+      ```bash
+      ./gradlew assembleDebug
+      ```
+      (Find APK in `app/build/outputs/apk/debug/`)
+    *   **Assemble Release APK (Requires signing configuration in `build.gradle`):**
+      ```bash
+      ./gradlew assembleRelease
+      ```
+
+### Running Tests
+
+1.  **Unit Tests (via Android Studio):**
+    *   Navigate to the `app/src/test/java` directory in the Project view.
+    *   Right-click on a specific test file or the `java` directory.
+    *   Select "Run 'Tests in ...'".
+    *   View results in the "Run" tool window.
+
+2.  **Unit Tests (via Command Line):**
+    ```bash
+    ./gradlew testDebugUnitTest
+    ```
+    (Find HTML report in `app/build/reports/tests/testDebugUnitTest/index.html`)
+
+3.  **Instrumented Tests (Requires Connected Device/Emulator - via Android Studio):**
+    *   Navigate to the `app/src/androidTest/java` directory.
+    *   Ensure a device or emulator is running and recognized by ADB.
+    *   Right-click on a test file or the `java` directory.
+    *   Select "Run 'Tests in ...'".
+
+4.  **Instrumented Tests (via Command Line):**
+    ```bash
+    ./gradlew connectedDebugAndroidTest
+    ```
+
+

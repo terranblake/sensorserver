@@ -27,6 +27,8 @@ import github.umer0586.sensorserver.websocketserver.ServerInfo
 import org.java_websocket.WebSocket
 import java.net.InetSocketAddress
 import java.net.UnknownHostException
+import github.umer0586.sensorserver.models.NetworkScanData
+import com.google.gson.Gson
 
 interface ServerStateListener
 {
@@ -52,6 +54,7 @@ class WebsocketService : Service()
 
 
     private var sensorWebSocketServer: SensorWebSocketServer? = null
+    private val gson = Gson()
 
     private var serverStateListener: ServerStateListener? = null
     private var connectionsChangeCallBack: ((List<WebSocket>) -> Unit)? = null
@@ -344,6 +347,19 @@ class WebsocketService : Service()
     fun sendMotionEvent(motionEvent : MotionEvent)
     {
         sensorWebSocketServer?.onMotionEvent(motionEvent)
+    }
+
+    fun sendNetworkScanData(networkData: NetworkScanData) {
+        if (sensorWebSocketServer?.isRunning == true) {
+            try {
+                val jsonData = gson.toJson(networkData)
+                sensorWebSocketServer?.broadcastNetworkScanData(jsonData)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending network scan data", e)
+            }
+        } else {
+            Log.w(TAG, "Server not running, cannot send network scan data.")
+        }
     }
 
     fun getConnectedClients(): List<WebSocket>

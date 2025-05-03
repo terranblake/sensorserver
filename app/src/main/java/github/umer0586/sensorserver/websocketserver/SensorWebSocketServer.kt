@@ -12,6 +12,10 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.Uri
+import github.umer0586.sensorserver.models.BluetoothScanResult
+import github.umer0586.sensorserver.models.NetworkScanData
+import github.umer0586.sensorserver.models.WifiScanResult
+import github.umer0586.sensorserver.sensors.NetworkSensorManager
 import android.os.*
 import android.util.Log
 import android.view.MotionEvent
@@ -24,14 +28,20 @@ import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
+import com.google.gson.Gson
+import com.google.gson.JsonSyntaxException
 
 data class ServerInfo(val ipAddress: String, val port: Int)
 class GPS
 class TouchSensors
+// Classes representing sensor types
+class WifiScanSensor
+class BluetoothScanSensor
+class NetworkScanSensor
 
 
 class SensorWebSocketServer(private val context: Context, address: InetSocketAddress) :
-    WebSocketServer(address), SensorEventListener, LocationListener
+    WebSocketServer(address), SensorEventListener, LocationListener, NetworkSensorManager.NetworkSensorEventListener
 {
 
     var samplingRate = 200000 //default value normal rate
@@ -39,9 +49,11 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     private var handlerThread: HandlerThread = HandlerThread("Handler Thread")
     private lateinit var handler: Handler
     private lateinit var motionEventHandler : Handler
+    private val gson = Gson()
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
     private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val networkSensorManager = NetworkSensorManager(context)
 
     //To keep a record of the sensors that this server is actively listening to for their events. It may contain duplicate entries
     private val sensorsInUse = mutableListOf<Sensor>()
@@ -66,6 +78,10 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         private const val CONNECTION_PATH_MULTIPLE_SENSORS = "/sensors/connect"
         private const val CONNECTION_PATH_GPS = "/gps"
         private const val CONNECTION_PATH_TOUCH_SENSORS = "/touchscreen"
+        // Network sensor paths
+    private const val CONNECTION_PATH_WIFI_SCAN = "/sensor/connect?type=android.sensor.wifi_scan"
+    private const val CONNECTION_PATH_BLUETOOTH_SCAN = "/sensor/connect?type=android.sensor.bluetooth_scan"
+    private const val CONNECTION_PATH_NETWORK_SCAN = "/sensor/connect?type=android.sensor.network_scan"
         private val message = mutableMapOf<String,Any>()
 
         //websocket close codes ranging 4000 - 4999 are for application's custom messages
@@ -101,6 +117,24 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                         notifyConnectionsChanged()
                     }
                     CONNECTION_PATH_GPS -> handleGPSRequest(clientWebsocket)
+                    CONNECTION_PATH_WIFI_SCAN -> {
+                        clientWebsocket.setAttachment(WifiScanSensor())
+                        Log.i(TAG, "Client connected for WiFi scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                        startNetworkScanning()
+                        notifyConnectionsChanged()
+                    }
+                    CONNECTION_PATH_BLUETOOTH_SCAN -> {
+                        clientWebsocket.setAttachment(BluetoothScanSensor())
+                        Log.i(TAG, "Client connected for Bluetooth scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                        startNetworkScanning()
+                        notifyConnectionsChanged()
+                    }
+                    CONNECTION_PATH_NETWORK_SCAN -> {
+                        clientWebsocket.setAttachment(NetworkScanSensor())
+                        Log.i(TAG, "Client connected for combined Network scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                        startNetworkScanning()
+                        notifyConnectionsChanged()
+                    }
                     else -> clientWebsocket.close(CLOSE_CODE_UNSUPPORTED_REQUEST, "unsupported request")
 
                 }
@@ -138,31 +172,76 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                 clientWebsocket.close(CLOSE_CODE_NO_SENSOR_SPECIFIED, " No sensor specified")
                 return
             }
-
         }
 
-        Log.i(TAG, "requested sensors : $requestedSensorTypes")
+        Log.i(TAG, "Multi-sensor request received: $requestedSensorTypes")
 
-        val requestedSensorList = mutableListOf<Sensor>()
+        // Create a list to store a mix of standard sensors and custom network sensors
+        val requestedSensorList = mutableListOf<Any>()
+        var containsNetworkSensor = false
 
-        requestedSensorTypes?.forEach { requestedSensorType ->
-
-            val sensor = sensorManager.getSensorFromStringType(requestedSensorType)
-            if (sensor == null)
-            {
-                clientWebsocket.close(CLOSE_CODE_SENSOR_NOT_FOUND,"sensor of type $requestedSensorType not found" )
-                requestedSensorList.clear()
-                return
+        // Safely iterate over the non-null array
+        requestedSensorTypes?.let { types ->
+            for (i in 0 until types.size) {
+                val requestedSensorType = types[i].toString()
+                // First check if this is a network sensor type
+                val sensorTypeString = requestedSensorType.lowercase(Locale.getDefault())
+                
+                if (networkSensorManager.isNetworkSensor(sensorTypeString)) {
+                    when (sensorTypeString) {
+                        NetworkSensorManager.TYPE_WIFI_SCAN -> {
+                            requestedSensorList.add(WifiScanSensor())
+                            containsNetworkSensor = true
+                            Log.i(TAG, "Added WiFi scan sensor to multi-sensor request")
+                        }
+                        NetworkSensorManager.TYPE_BLUETOOTH_SCAN -> {
+                            requestedSensorList.add(BluetoothScanSensor())
+                            containsNetworkSensor = true
+                            Log.i(TAG, "Added Bluetooth scan sensor to multi-sensor request")
+                        }
+                        NetworkSensorManager.TYPE_NETWORK_SCAN -> {
+                            requestedSensorList.add(NetworkScanSensor())
+                            containsNetworkSensor = true
+                            Log.i(TAG, "Added Network scan sensor to multi-sensor request")
+                        }
+                    }
+                } else {
+                    // Not a network sensor, try regular sensors
+                    val sensor = sensorManager.getSensorFromStringType(sensorTypeString)
+                    if (sensor == null) {
+                        clientWebsocket.close(CLOSE_CODE_SENSOR_NOT_FOUND, "sensor of type $sensorTypeString not found")
+                        requestedSensorList.clear()
+                        return
+                    }
+                    requestedSensorList.add(sensor)
+                    Log.d(TAG, "Added standard sensor to multi-sensor request")
+                }
             }
-            requestedSensorList.add(sensor)
         }
 
-        // For new requesting client, attach a tag of requested sensor type with client
+        if (requestedSensorList.isEmpty()) {
+            clientWebsocket.close(CLOSE_CODE_NO_SENSOR_SPECIFIED, "No valid sensors found in request")
+            return
+        }
+
+        // For new requesting client, attach a tag of requested sensor list with client
         clientWebsocket.setAttachment(requestedSensorList)
+        Log.i(TAG, "Attached ${requestedSensorList.size} sensors to client websocket")
 
-        for (sensor in requestedSensorList)
+        // Register listeners for standard sensors
+        val standardSensors = requestedSensorList.filterIsInstance<Sensor>()
+        for (sensor in standardSensors) {
             registerListenerForSensor(sensor)
-
+        }
+        Log.i(TAG, "Registered listeners for ${standardSensors.size} standard sensors")
+        
+        // Start network scanning if needed
+        if (containsNetworkSensor) {
+            Log.i(TAG, "Multi-sensor request contains network sensors, starting network scanning")
+            startNetworkScanning()
+        }
+        
+        notifyConnectionsChanged()
     }
 
     /**
@@ -197,9 +276,33 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
 
 
+        // First check if this is a network sensor type
+        if (networkSensorManager.isNetworkSensor(paramType)) {
+            // Handle network sensors
+            when (paramType.lowercase()) {
+                NetworkSensorManager.TYPE_WIFI_SCAN -> {
+                    clientWebsocket.setAttachment(WifiScanSensor())
+                    Log.i(TAG, "Client connected for WiFi scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                    startNetworkScanning()
+                }
+                NetworkSensorManager.TYPE_BLUETOOTH_SCAN -> {
+                    clientWebsocket.setAttachment(BluetoothScanSensor())
+                    Log.i(TAG, "Client connected for Bluetooth scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                    startNetworkScanning()
+                }
+                NetworkSensorManager.TYPE_NETWORK_SCAN -> {
+                    clientWebsocket.setAttachment(NetworkScanSensor())
+                    Log.i(TAG, "Client connected for combined Network scan sensor: ${clientWebsocket.remoteSocketAddress}")
+                    startNetworkScanning()
+                }
+            }
+            return
+        }
+        
+        // Not a network sensor, try regular sensors
         // sensorManager.getSensorFromStringType(String) returns null when invalid sensor type is passed or when sensor type is not supported by the device
-        val requestedSensor = sensorManager.getSensorFromStringType(paramType)
-
+        val requestedSensor = sensorManager.getSensorFromStringType(paramType) as? Sensor
+        
         //If client has requested invalid or unsupported sensor
         // then close client Websocket connection and return ( i-e do not proceed further)
         if (requestedSensor == null)
@@ -226,7 +329,7 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         {
 
             // Log the sensor type and that it is already registered
-            Log.i(TAG, "Sensor ${sensor.stringType} already registered, skipping registration")
+            Log.i(TAG, "Sensor ${sensor.name} already registered, skipping registration")
 
             // Update a list
             // Duplicate entries allowed
@@ -324,30 +427,50 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     {
        // super.onStatusChanged(provider, status, extras)
     }
-    override fun onClose(clientWebsocket: WebSocket, code: Int, reason: String, remote: Boolean)
+    override fun onClose(clientWebsocket: WebSocket, code: Int, reason: String?, remote: Boolean)
     {
-        Log.i(TAG,"Connection closed ${clientWebsocket.remoteSocketAddress}  with exit code  $code  additional info: $reason")
+        Log.i(TAG, "Closed " + clientWebsocket.remoteSocketAddress + " with exit code " + code + " additional info: " + reason)
 
-        if (clientWebsocket.getAttachment<Any>() is Sensor)
+        val tag = clientWebsocket.getAttachment<Any?>()
+        when (tag)
         {
-            // Get sensor type of recently closed client
-            val sensor = clientWebsocket.getAttachment<Sensor>()
-            unregisterListenerForSensor(sensor)
-        }
-        else if (clientWebsocket.getAttachment<Any>() is ArrayList<*>)
-        {
-            val sensors = clientWebsocket.getAttachment<List<Sensor>>()
-            for (sensor in sensors)
-                unregisterListenerForSensor(sensor)
-        }
-        else if (clientWebsocket.getAttachment<Any>() is GPS)
-        {
+            is Sensor ->
+            {
+                unregisterListenerForSensor(tag)
+            }
 
-            // unregister this server for location updates from GPS ...
-            // when there are no clients associated with GPS
-            if (getGPSConnectionCount() == 0)
-                locationManager.removeUpdates( this )
+            is List<*> ->
+            {
+                // First handle standard sensors
+                tag.filterIsInstance<Sensor>().forEach {
+                    unregisterListenerForSensor(it)
+                }
+                
+                // Check if list contains any network sensors
+                val hasNetworkSensors = tag.any { 
+                    it is WifiScanSensor || it is BluetoothScanSensor || it is NetworkScanSensor 
+                }
+                
+                // If the list contained network sensors, handle cleanup
+                if (hasNetworkSensors) {
+                    Log.i(TAG, "Client with multi-sensor request disconnected, checking network sensors")
+                    stopNetworkScanning()
+                }
+            }
+
+            is GPS -> {
+                unregisterLocationListener()
+            }
+
+            is TouchSensors -> {
+                //no need to do anything
+            }
+            is WifiScanSensor, is BluetoothScanSensor, is NetworkScanSensor -> {
+                Log.i(TAG, "Client disconnected from network sensor: ${clientWebsocket.remoteSocketAddress}")
+                stopNetworkScanning()
+            }
         }
+
         notifyConnectionsChanged()
     }
 
@@ -357,7 +480,7 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
         // When client has closed connection, how many clients receiving same sensor data from this server
         val sensorConnectionCount = getSensorConnectionCount(sensor).toLong()
-        Log.i(TAG, "Sensor : " + sensor.stringType + " Connections : " + sensorConnectionCount)
+        Log.i(TAG, "Sensor : " + sensor.name + " Connections : " + sensorConnectionCount)
 
         /*
             Suppose we have 3 clients each receiving light sensor data \
@@ -376,6 +499,19 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         notifyConnectionsChanged()
     }
 
+    // Method to unregister location updates
+    private fun unregisterLocationListener() {
+        // Count how many clients are still using GPS
+        val gpsClientCount = connections.count { it.getAttachment<Any>() is GPS }
+        
+        // Only unregister if this is the last client using GPS
+        if (gpsClientCount <= 1) {
+            locationManager.removeUpdates(this)
+            Log.i(TAG, "Location updates unregistered")
+        } else {
+            Log.i(TAG, "Location updates still needed by $gpsClientCount clients")
+        }
+    }
 
     override fun onMessage(websocket: WebSocket, message: String)
     {
@@ -576,65 +712,77 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
     }
 
-    fun onMotionEvent(motionEvent : MotionEvent)
+    fun onMotionEvent(motionEvent: MotionEvent)
     {
 
-        val message = Message.obtain()
-        message.obj = motionEvent
-        motionEventHandler.sendMessage(message)
+        motionEventHandler.post{
 
+            message.clear()
+            message["x"] = motionEvent.x
+            message["y"] = motionEvent.y
+            message["action"] = when (motionEvent.action)
+            {
+                MotionEvent.ACTION_DOWN -> "ACTION_DOWN"
+                MotionEvent.ACTION_UP -> "ACTION_UP"
+                MotionEvent.ACTION_MOVE -> "ACTION_MOVE"
+                else -> motionEvent.action.toString() // Use toString for other actions
+            }
+
+            val jsonData = gson.toJson(message)
+
+            // Find all clients that requested touch events
+            val touchClients = connections.filter { it.getAttachment<Any?>() is TouchSensors }
+            touchClients.forEach {
+                try {
+                    it.send(jsonData as String)
+                } catch (e: WebsocketNotConnectedException) {
+                    Log.w(TAG, "Attempted to send to a closed websocket (touch): ${it.remoteSocketAddress}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error sending touch event", e)
+                }
+            }
+        }
     }
 
     override fun onSensorChanged(sensorEvent: SensorEvent)
     {
-        // Log.i(TAG, "onSensorChanged: Thread " + Thread.currentThread().getName());
-        // Log.i(TAG, "onSensorChanged: Sensor " + sensorEvent.sensor.getStringType());
-        if (getConnectionCount() == 0)
-            Log.w( TAG," Sensor event reported when no client in connected" )
+        val sensor = sensorEvent.sensor
 
         message.clear()
+        message["values"] = sensorEvent.values
+        message["accuracy"] = sensorEvent.accuracy
+        message["timestamp"] = sensorEvent.timestamp
 
-        // Loop through each connected client
-        for (webSocket in connections)
-        {
-            // Send data as per sensor type requested by client
-            if (webSocket.getAttachment<Any>() is Sensor)
-            {
-                val clientAssociatedSensor = webSocket.getAttachment<Sensor>()
+        // Find all clients that requested this specific sensor (single or multi)
+        val targetClients = connections.filter { ws ->
+            val attachment = ws.getAttachment<Any?>()
+            (attachment is Sensor && attachment == sensor) || (attachment is List<*> && (attachment as? List<*>)?.filterIsInstance<Sensor>()?.contains(sensor) == true)
+        }
 
-                if (clientAssociatedSensor != null) if (clientAssociatedSensor.type == sensorEvent.sensor.type && webSocket.isOpen)
-                {
-                    message["values"] = sensorEvent.values
-                    message["timestamp"] = sensorEvent.timestamp
-                    message["accuracy"] = sensorEvent.accuracy
-                    try{
-                        webSocket.send(JsonUtil.toJSON(message))
-                    } catch(e: WebsocketNotConnectedException){
-                        e.printStackTrace()
-                    }
-
-                }
+        // Send to clients that requested only this sensor
+        val singleSensorJson = gson.toJson(message) // Serialize once
+        targetClients.filter { it.getAttachment<Any?>() is Sensor }.forEach {
+            try {
+                 it.send(singleSensorJson as String)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.w(TAG, "Attempted to send to a closed websocket (single): ${it.remoteSocketAddress}")
+            } catch (e: Exception) {
+                 Log.e(TAG, "Error sending sensor data (single)", e)
             }
-            else if (webSocket.getAttachment<Any>() is ArrayList<*>)
-            {
-                val clientAssociatedSensors = webSocket.getAttachment<List<Sensor>>()
+        }
 
-                for (clientAssociatedSensor in clientAssociatedSensors)
-                {
-                    if (clientAssociatedSensor.type == sensorEvent.sensor.type && webSocket.isOpen)
-                    {
-                        message["values"] = sensorEvent.values
-                        message["timestamp"] = sensorEvent.timestamp
-                        message["accuracy"] = sensorEvent.accuracy
-                        message["type"] = sensorEvent.sensor.stringType
-                        try{
-                            webSocket.send(JsonUtil.toJSON(message))
-                        } catch (e : WebsocketNotConnectedException){
-                            e.printStackTrace()
-                        }
-
-                    }
-                }
+         // Send to clients that requested multiple sensors including this one
+         // Fix: Use stringType instead of name to ensure we have the full type path
+        message["type"] = sensor.stringType // Use stringType instead of name
+        val multiSensorJson = gson.toJson(message) // Serialize again with type
+        val multiSensorClients = targetClients.filter { it.getAttachment<Any?>() is List<*> }
+        multiSensorClients.forEach {
+            try {
+                it.send(multiSensorJson as String)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.w(TAG, "Attempted to send to a closed websocket (multi): ${it.remoteSocketAddress}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending sensor data (multi)", e)
             }
         }
     }
@@ -692,14 +840,189 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         connectionsChangeCallBack = callBack
     }
 
+    fun broadcastNetworkScanData(jsonData: String) {
+        // Find all clients that requested network scan data
+        val networkScanClients = connections.filter { it.getAttachment<Any?>() is WifiScanSensor || 
+                                                      it.getAttachment<Any?>() is BluetoothScanSensor || 
+                                                      it.getAttachment<Any?>() is NetworkScanSensor }
+        Log.d(TAG, "Broadcasting network data to ${networkScanClients.size} clients.")
+        // Use broadcast method for efficiency
+        broadcast(jsonData, networkScanClients)
+    }
 
-}
-
-fun SensorManager.getSensorFromStringType(sensorStringType: String) : Sensor?
-{
-    return getSensorList(Sensor.TYPE_ALL)
-        .filter { it.stringType.equals(sensorStringType, ignoreCase = true) }
-        .firstOrNull()
+    // Helper method to start/stop network scanning when needed
+    private fun startNetworkScanning() {
+        Log.i(TAG, "Starting network scanning check with ${connections.size} total connections")
+        
+        // Check if any clients are using network sensors directly or in a list
+        val hasNetworkClients = connections.any { conn -> 
+            val attachment = conn.getAttachment<Any?>()
+            when (attachment) {
+                is WifiScanSensor, is BluetoothScanSensor, is NetworkScanSensor -> true
+                is List<*> -> attachment.any { 
+                    it is WifiScanSensor || it is BluetoothScanSensor || it is NetworkScanSensor 
+                }
+                else -> false
+            }
+        }
+        
+        if (hasNetworkClients) {
+            Log.i(TAG, "Network client detected, registering for network scan events")
+            networkSensorManager.registerListener(this)
+            // Force an immediate scan by manually triggering the scan scheduler
+            // This ensures clients don't have to wait for the next scheduler interval
+            // to receive data when they first connect
+            networkSensorManager.triggerImmediateScan()
+        } else {
+            Log.i(TAG, "No network clients detected after check")
+        }
+    }
+    
+    private fun stopNetworkScanning() {
+        Log.i(TAG, "Checking if we should stop network scanning...")
+        // Check if any clients are still using network sensors directly or in a list
+        val hasNetworkClients = connections.any { conn ->
+            val attachment = conn.getAttachment<Any?>()
+            when (attachment) {
+                is WifiScanSensor, is BluetoothScanSensor, is NetworkScanSensor -> true
+                is List<*> -> attachment.any { 
+                    it is WifiScanSensor || it is BluetoothScanSensor || it is NetworkScanSensor 
+                }
+                else -> false
+            }
+        }
+        
+        if (!hasNetworkClients) {
+            Log.i(TAG, "No more network clients, unregistering network sensor listener")
+            networkSensorManager.unregisterListener(this)
+        } else {
+            Log.i(TAG, "Network scanning continues for ${connections.size} total connections")
+        }
+    }
+    
+    // Implementation of NetworkSensorManager.NetworkSensorEventListener
+    override fun onWifiScanResult(results: List<WifiScanResult>) {
+        // Find all clients that want WiFi scan data
+        val wifiClients = connections.filter { it.getAttachment<Any?>() is WifiScanSensor }
+        
+        // Also find multi-sensor clients that include WiFi scan sensor
+        val multiSensorWifiClients = connections.filter { conn ->
+            val attachment = conn.getAttachment<Any?>()
+            if (attachment is List<*>) {
+                attachment.any { it is WifiScanSensor }
+            } else {
+                false
+            }
+        }
+        
+        val totalWifiClients = wifiClients.size + multiSensorWifiClients.size
+        if (totalWifiClients == 0) return
+        
+        Log.i(TAG, "===> Sending WiFi scan results (${results.size} networks) to $totalWifiClients clients")
+        
+        // Convert to JSON and send to appropriate clients
+        val jsonData = gson.toJson(mapOf("type" to NetworkSensorManager.TYPE_WIFI_SCAN, "values" to results))
+        
+        // Send to dedicated WiFi clients
+        wifiClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send WiFi scan results: Client not connected", e)
+            }
+        }
+        
+        // Send to multi-sensor clients that include WiFi
+        multiSensorWifiClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send WiFi scan results to multi-sensor client", e)
+            }
+        }
+    }
+    
+    override fun onBluetoothScanResult(results: List<BluetoothScanResult>) {
+        // Find all clients that want Bluetooth scan data
+        val btClients = connections.filter { it.getAttachment<Any?>() is BluetoothScanSensor }
+        
+        // Also find multi-sensor clients that include Bluetooth scan sensor
+        val multiSensorBtClients = connections.filter { conn ->
+            val attachment = conn.getAttachment<Any?>()
+            if (attachment is List<*>) {
+                attachment.any { it is BluetoothScanSensor }
+            } else {
+                false
+            }
+        }
+        
+        val totalBtClients = btClients.size + multiSensorBtClients.size
+        if (totalBtClients == 0) return
+        
+        Log.i(TAG, "===> Sending Bluetooth scan results (${results.size} devices) to $totalBtClients clients")
+        
+        // Convert to JSON and send to appropriate clients
+        val jsonData = gson.toJson(mapOf("type" to NetworkSensorManager.TYPE_BLUETOOTH_SCAN, "values" to results))
+        
+        // Send to dedicated Bluetooth clients
+        btClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send Bluetooth scan results: Client not connected", e)
+            }
+        }
+        
+        // Send to multi-sensor clients that include Bluetooth
+        multiSensorBtClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send Bluetooth scan results to multi-sensor client", e)
+            }
+        }
+    }
+    
+    override fun onNetworkScanResult(data: NetworkScanData) {
+        // Find all clients that want combined network scan data
+        val networkClients = connections.filter { it.getAttachment<Any?>() is NetworkScanSensor }
+        
+        // Also find multi-sensor clients that include Network scan sensor
+        val multiSensorNetworkClients = connections.filter { conn ->
+            val attachment = conn.getAttachment<Any?>()
+            if (attachment is List<*>) {
+                attachment.any { it is NetworkScanSensor }
+            } else {
+                false
+            }
+        }
+        
+        val totalNetworkClients = networkClients.size + multiSensorNetworkClients.size
+        if (totalNetworkClients == 0) return
+        
+        Log.i(TAG, "===> Sending network scan results (${data.wifiResults.size} WiFi networks, ${data.bluetoothResults.size} BT devices) to $totalNetworkClients clients")
+        
+        // Convert to JSON and send to appropriate clients
+        val jsonData = gson.toJson(mapOf("type" to NetworkSensorManager.TYPE_NETWORK_SCAN, "values" to data))
+        
+        // Send to dedicated Network clients
+        networkClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send network scan results: Client not connected", e)
+            }
+        }
+        
+        // Send to multi-sensor clients that include Network
+        multiSensorNetworkClients.forEach { client ->
+            try {
+                client.send(jsonData)
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "Failed to send network scan results to multi-sensor client", e)
+            }
+        }
+    }
 
 }
 
