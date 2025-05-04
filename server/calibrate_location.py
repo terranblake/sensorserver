@@ -15,6 +15,7 @@ import math
 import time
 import os
 import logging
+import sys # Import sys for sys.exit()
 
 # --- Configuration ---
 # Log files used by the server
@@ -35,9 +36,12 @@ logger = logging.getLogger(__name__)
 # --- Data Loading and Parsing (Adapted from sample) ---
 
 def load_log_entries(log_file):
-    """Loads JSON entries from a log file."""
+    """Loads JSON entries from a log file. Returns None if file not found."""
     entries = []
     logger.info(f"Attempting to load log file: {log_file}")
+    if not os.path.exists(log_file):
+        logger.error(f"Required log file not found: {log_file}")
+        return None # Indicate failure
     try:
         with open(log_file, 'r') as f:
             for i, line in enumerate(f):
@@ -340,15 +344,21 @@ def main():
 
     # 1. Load Raw Data
     raw_entries = load_log_entries(RAW_DATA_LOG)
+    if raw_entries is None:
+        logger.critical(f"Failed to load {RAW_DATA_LOG}. Cannot proceed.")
+        sys.exit(1) # Exit with error code
     if not raw_entries:
-        logger.error("No raw data loaded. Cannot proceed.")
-        return
+        logger.error("Raw data log is empty. Cannot proceed.")
+        sys.exit(1)
 
     # 2. Load Event Data
     event_entries = load_log_entries(EVENT_DATA_LOG)
+    if event_entries is None:
+        logger.critical(f"Failed to load {EVENT_DATA_LOG}. Cannot proceed.")
+        sys.exit(1) # Exit with error code
     if not event_entries:
-        logger.error("No event data loaded. Cannot proceed.")
-        return
+        logger.error("Event data log is empty. Cannot proceed.")
+        sys.exit(1)
 
     # 3. Extract Annotated Events (relevant locations and timestamps)
     annotated_network_events = get_annotated_network_events(event_entries)
@@ -368,36 +378,5 @@ def main():
     logger.info("--- Calibration Process Finished ---")
 
 if __name__ == "__main__":
-    # Ensure log files exist for demonstration if they don't
-    # This part is less critical if run within the server context where logs exist
-    if not os.path.exists(RAW_DATA_LOG):
-        logger.warning(f"{RAW_DATA_LOG} not found. Creating dummy file.")
-        # Create minimal dummy file if needed, calibration likely won't work well
-        with open(RAW_DATA_LOG, 'w') as f:
-             # Sample network scan entry
-             dummy_scan = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "sensor_type": "android.sensor.network_scan",
-                "raw_data": {
-                    "type": "android.sensor.network_scan",
-                    "values": {
-                        "bluetoothResults": [{"address": "AA:BB:CC:DD:EE:FF", "name": "DummyBT", "rssi": -70, "timestamp": int(time.time()*1000)}],
-                        "wifiResults": [{"bssid": "11:22:33:44:55:66", "frequency": 2412, "rssi": -60, "ssid": "DummyWiFi", "timestamp": int(time.time()*1000)}]
-                    }
-                }
-             }
-             f.write(json.dumps(dummy_scan) + '\n')
-
-    if not os.path.exists(EVENT_DATA_LOG):
-        logger.warning(f"{EVENT_DATA_LOG} not found. Creating dummy file.")
-        # Create minimal dummy file if needed
-        with open(EVENT_DATA_LOG, 'w') as f:
-             dummy_event = {
-                 "timestamp": datetime.datetime.now().isoformat(),
-                 "ip_address": "127.0.0.1",
-                 "description": "dummy event in the kitchen", # Ensure a keyword is present
-                 "selected_sensors": ["android.sensor.network_scan"]
-             }
-             f.write(json.dumps(dummy_event) + '\n')
-
+    # Removed dummy file creation logic
     main() 
