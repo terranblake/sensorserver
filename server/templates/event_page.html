@@ -68,7 +68,6 @@
     const autoLogDurationInput = document.getElementById('autoLogDuration');
     const startAutoLogBtn = document.getElementById('startAutoLogBtn');
     const autoLogStatus = document.getElementById('autoLogStatus');
-    const descriptionInput = document.getElementById('description'); // Get description textarea
 
     // Function to recursively build HTML string for the sensor tree
     function buildSensorTreeHtml(node, path = '') {
@@ -155,8 +154,6 @@
     // --- Auto Logging --- //
     startAutoLogBtn.addEventListener('click', async () => {
         const duration = parseFloat(autoLogDurationInput.value);
-        const description = descriptionInput.value.trim(); // Read and trim description
-
         if (isNaN(duration) || duration <= 0 || duration > 300) {
             autoLogStatus.textContent = 'Error: Invalid duration (must be > 0 and <= 300).';
             autoLogStatus.className = 'form-text text-danger';
@@ -171,7 +168,6 @@
         try {
             const formData = new FormData();
             formData.append('duration', duration);
-            formData.append('description', description); // Add description to form data
 
             const response = await fetch('/start_auto_log', {
                 method: 'POST',

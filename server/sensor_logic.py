@@ -664,7 +664,6 @@ class MultiSensorClient:
                         "timestamp": timestamp.isoformat(),
                         "event_type": "auto_log_sensor_update",
                         "sensor_path": normalized_sensor_type,
-                        "description": self.auto_log_state.get('description', ''),
                         "raw_data": data
                     }
                     event_data_logger.info(json.dumps(auto_log_entry))
@@ -888,7 +887,6 @@ class GpsClient:
                         "timestamp": timestamp.isoformat(),
                         "event_type": "auto_log_sensor_update",
                         "sensor_path": normalized_sensor_type,
-                        "description": self.auto_log_state.get('description', ''),
                         "raw_data": data
                     }
                     event_data_logger.info(json.dumps(auto_log_entry))

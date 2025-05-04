@@ -71,8 +71,7 @@ data_lock = threading.Lock()
 # State for automatic logging
 auto_log_state = {
     'active': False,
-    'end_time': None,
-    'description': None # Store description used for auto-log period
+    'end_time': None
 }
 
 # --- Flask App Setup ---
@@ -155,7 +154,6 @@ def stop_auto_log():
              logger.info("Automatic sensor logging period finished.")
              auto_log_state['active'] = False
              auto_log_state['end_time'] = None
-             auto_log_state['description'] = None # Clear description
              auto_log_timer = None # Clear the timer reference
 
 @app.route('/start_auto_log', methods=['POST'])
@@ -164,8 +162,6 @@ def start_auto_log():
     global auto_log_timer
     try:
         duration = float(request.form.get('duration', 5.0)) # Default 5s
-        description = request.form.get('description', '').strip() # Get description
-
         if duration <= 0 or duration > 300: # Basic validation (e.g., max 5 mins)
             return jsonify({"error": "Invalid duration (must be > 0 and <= 300 seconds)."}), 400
 
@@ -178,8 +174,7 @@ def start_auto_log():
             now = datetime.now()
             auto_log_state['active'] = True
             auto_log_state['end_time'] = now + timedelta(seconds=duration)
-            auto_log_state['description'] = description # Store the description
-            logger.info(f"Starting automatic sensor logging for {duration} seconds until {auto_log_state['end_time']} with description: '{description if description else "<none>"}'.")
+            logger.info(f"Starting automatic sensor logging for {duration} seconds until {auto_log_state['end_time']}.")
 
             # Schedule stop function
             auto_log_timer = threading.Timer(duration, stop_auto_log)
