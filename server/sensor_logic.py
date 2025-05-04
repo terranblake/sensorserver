@@ -21,7 +21,9 @@ import statistics # For median/stdev in fingerprint loading
 # WS_BASE_URI = f"ws://{SERVER_ADDRESS}:{WS_PORT}"
 GPS_SEND_INTERVAL = 1 # Seconds between sending getLastKnownLocation
 # LOG_FILE = "sensor_data.log" # Specific log files handled differently now
-CALIBRATION_DATA_FILE = 'location_fingerprints.json'
+
+# Construct path relative to the expected execution directory of server.py (project root)
+CALIBRATION_DATA_FILE = os.path.join('server', 'location_fingerprints.json')
 
 # Inference Thresholds
 MOTION_MAGNITUDE_THRESHOLD = 0.3 # For accelerometer magnitude
