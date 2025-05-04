@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import asyncio
 import websockets
 import json
@@ -8,6 +10,7 @@ import time # For ISO timestamp
 from datetime import datetime, timedelta # For ISO timestamp and timedelta
 import math # For vector magnitude
 import os # For file handler path
+import statistics # For median/stdev in fingerprint loading
 
 # --- Configuration (Moved from all_sensors.py) ---
 # Server details (Will be passed in or configured differently later)
@@ -18,6 +21,7 @@ import os # For file handler path
 # WS_BASE_URI = f"ws://{SERVER_ADDRESS}:{WS_PORT}"
 GPS_SEND_INTERVAL = 1 # Seconds between sending getLastKnownLocation
 # LOG_FILE = "sensor_data.log" # Specific log files handled differently now
+CALIBRATION_DATA_FILE = 'location_fingerprints.json'
 
 # Inference Thresholds
 MOTION_MAGNITUDE_THRESHOLD = 0.3 # For accelerometer magnitude
@@ -42,6 +46,7 @@ state_data_logger.propagate = False
 # --- Shared State ---
 # Use a standard dict for nested structure
 nested_sensor_data = {}
+location_fingerprints = {} # For storing loaded location fingerprints
 # TODO: Consider passing this state or encapsulating it in a class for better management
 
 # --- Sensor State Class ---
@@ -143,6 +148,179 @@ def initialize_nested_keys(sensor_types):
         elif parts and parts[0]:
              logger.warning(f"Initializing short/unexpected key: {parts}")
              update_nested_data(nested_sensor_data, parts, initial_state)
+
+    # Add entry for predicted location
+    update_nested_data(nested_sensor_data, ['location', 'predicted'], initial_state)
+
+# --- Location Prediction Functions (Adapted from sample/calibration) ---
+def load_fingerprints(filename):
+    """Loads location fingerprints from a JSON file."""
+    global location_fingerprints # Modify the global dict
+    logger.info(f"Attempting to load fingerprints from {filename}")
+    try:
+        with open(filename, 'r') as f:
+            serializable_fingerprints = json.load(f)
+            # Convert string keys back to tuple keys
+            fingerprints = {}
+            for location, networks_data in serializable_fingerprints.items():
+                fingerprints[location] = {}
+                for key_str, data in networks_data.items():
+                    try:
+                        ntype, nid = key_str.split('_', 1)
+                        # Ensure data has expected keys, provide defaults if missing
+                        data.setdefault('median_rssi', -999) # Default to very weak if missing
+                        data.setdefault('std_dev_rssi', 100) # Default to high uncertainty if missing
+                        fingerprints[location][(ntype, nid)] = data
+                    except ValueError:
+                        logger.warning(f"Skipping invalid fingerprint key format: {key_str} in location {location}")
+                    except Exception as e:
+                        logger.error(f"Error processing fingerprint key {key_str} for {location}: {e}")
+
+            location_fingerprints = fingerprints # Update the global variable
+            logger.info(f"Successfully loaded and processed fingerprints for {len(location_fingerprints)} locations from {filename}")
+            return True # Indicate success
+    except FileNotFoundError:
+        logger.warning(f"Fingerprint file {filename} not found. Location prediction disabled.")
+        location_fingerprints = {} # Ensure it's empty
+        return False
+    except json.JSONDecodeError as e:
+        logger.error(f"Could not decode JSON from {filename}: {e}. Location prediction disabled.")
+        location_fingerprints = {} # Ensure it's empty
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error loading fingerprints from {filename}: {e}", exc_info=True)
+        location_fingerprints = {} # Ensure it's empty
+        return False
+
+def calculate_similarity(current_network_data, location_fingerprint, missing_penalty_factor=1.0, extra_penalty_factor=0.5):
+    """
+    Calculates a similarity score between current network data and a location fingerprint.
+    Lower score means higher similarity (like a distance metric).
+    Uses standard deviation to weight the difference penalty.
+    """
+    score = 0.0
+    # Convert current data to a dictionary for quick lookup: {(type, id): rssi}
+    current_networks = {}
+    for net in current_network_data:
+        # Ensure type, id, and rssi are present and valid
+        net_type = net.get('type')
+        net_id = str(net.get('id')) # Ensure ID is string
+        net_rssi = net.get('rssi')
+        if net_type and net_id and isinstance(net_rssi, (int, float)):
+            current_networks[(net_type, net_id)] = net_rssi
+        else:
+            logger.debug(f"Skipping invalid network data item in similarity calc: {net}")
+
+    fingerprint_networks = location_fingerprint # This should already be {(type, id): {median_rssi: ..., std_dev_rssi: ...}}
+
+    if not fingerprint_networks: # Handle empty fingerprint
+        # If fingerprint is empty, score is high if current networks exist, low otherwise
+        return len(current_networks) * abs(extra_penalty_factor * -75) # Penalty per extra network (avg RSSI)
+
+    # Compare networks present in both
+    matched_keys = 0
+    for network_key, fingerprint_data in fingerprint_networks.items():
+        # Safely access median and std_dev, providing defaults if missing
+        best_fit_rssi = fingerprint_data.get('median_rssi', -999)
+        std_dev_rssi = fingerprint_data.get('std_dev_rssi', 100)
+
+        if network_key in current_networks:
+            matched_keys += 1
+            current_rssi = current_networks[network_key]
+            # Calculate difference. Normalize by std dev if std dev > 0
+            diff = abs(current_rssi - best_fit_rssi)
+            # Weight the difference penalty inversely by stability (lower std dev = higher weight)
+            # Add a small epsilon to avoid division by zero and reduce impact of tiny std dev
+            weighted_diff = diff / (max(std_dev_rssi, 0.1) + 1e-6) # Use max(std_dev, 0.1) to avoid overly sensitive weighting
+            score += weighted_diff ** 2 # Use squared weighted difference
+            logger.debug(f"  Match {network_key}: Current={current_rssi}, Fingerprint={best_fit_rssi:.1f}, StdDev={std_dev_rssi:.1f}, WeightedDiff^2={weighted_diff**2:.2f}")
+        else:
+            # Penalty for networks expected at this location but not currently visible
+            # A strong, stable expected signal that's missing is a higher penalty
+            # Penalty increases as median_rssi is stronger (less negative)
+            # Penalty increases as std_dev_rssi is lower (more stable)
+            # Example: base penalty on median, scaled by inverse std dev
+            base_penalty = max(0, 100 + best_fit_rssi) # Scale strength (e.g., -30dBm -> 70, -90dBm -> 10)
+            stability_factor = 1 / (max(std_dev_rssi, 0.1) + 1e-6)
+            penalty = (base_penalty * stability_factor) ** 1.5 # Apply power to emphasize
+            score += penalty * missing_penalty_factor
+            logger.debug(f"  Missing {network_key}: Fingerprint={best_fit_rssi:.1f}, StdDev={std_dev_rssi:.1f}, Penalty={penalty * missing_penalty_factor:.2f}")
+
+    # Penalty for networks currently visible but not in the location's fingerprint
+    extra_keys = 0
+    for network_key, current_rssi in current_networks.items():
+        if network_key not in fingerprint_networks:
+            extra_keys += 1
+            # Penalty for unexpected networks. Base penalty on signal strength.
+            base_penalty = max(0, 100 + current_rssi)
+            score += base_penalty * extra_penalty_factor
+            logger.debug(f"  Extra {network_key}: Current={current_rssi}, Penalty={base_penalty * extra_penalty_factor:.2f}")
+
+    # Optional: Normalization - reduce score if many networks matched well?
+    # Or increase score if fingerprint has many networks but few were matched/extra?
+    # Example: Normalize by total number of networks considered (fingerprint + extras)
+    num_fingerprint_nets = len(fingerprint_networks)
+    total_considered = num_fingerprint_nets + extra_keys
+    if total_considered > 0:
+        # Lower score slightly if the ratio of matched keys is high
+        match_ratio = matched_keys / num_fingerprint_nets if num_fingerprint_nets > 0 else 0
+        # score *= (1.0 - (match_ratio * 0.1)) # Mild adjustment based on match ratio
+        pass # Keep normalization simple for now
+
+    logger.debug(f"  Final Score: {score:.2f} (Matched: {matched_keys}, Missing: {num_fingerprint_nets-matched_keys}, Extra: {extra_keys})")
+    return score
+
+def predict_location(current_network_data):
+    """
+    Predicts the current location based on network data and loaded location fingerprints.
+    Returns the name of the best matching location or None.
+    """
+    if not location_fingerprints:
+        logger.debug("Prediction skipped: No location fingerprints loaded.")
+        return None # No fingerprints loaded
+
+    if not current_network_data:
+        logger.debug("Prediction skipped: No current network data provided.")
+        return None # Cannot predict without current data
+
+    best_match_location = None
+    min_score = float('inf')
+    scores = {}
+
+    logger.debug(f"Predicting location based on {len(current_network_data)} current networks...")
+    for location, fingerprint in location_fingerprints.items():
+        logger.debug(f"Calculating score for location: '{location}'")
+        score = calculate_similarity(current_network_data, fingerprint)
+        scores[location] = score
+        logger.info(f"Location '{location}' score: {score:.2f}")
+
+        if score < min_score:
+            min_score = score
+            best_match_location = location
+
+    # Basic confidence check: score needs to be below a threshold, or significantly better than the next best
+    # This requires tuning based on observed scores
+    CONFIDENCE_THRESHOLD = 500 # Example threshold - NEEDS TUNING
+    SIGNIFICANT_DIFFERENCE = 1.5 # Example: Best score must be 1.5x lower than second best
+
+    if best_match_location and min_score < CONFIDENCE_THRESHOLD:
+        sorted_scores = sorted(scores.items(), key=lambda item: item[1])
+        if len(sorted_scores) > 1:
+             second_best_score = sorted_scores[1][1]
+             # Check if the best score is significantly better than the second best
+             if min_score * SIGNIFICANT_DIFFERENCE < second_best_score:
+                  logger.info(f"Predicted location: '{best_match_location}' (Score: {min_score:.2f}, Confident - significantly better than '{sorted_scores[1][0]}' score {second_best_score:.2f})")
+                  return best_match_location
+             else:
+                  logger.info(f"Predicted location: '{best_match_location}' (Score: {min_score:.2f}, Low Confidence - similar to '{sorted_scores[1][0]}' score {second_best_score:.2f})")
+                  return None # Low confidence due to similar scores
+        else:
+            # Only one location, prediction is confident by default if below threshold
+            logger.info(f"Predicted location: '{best_match_location}' (Score: {min_score:.2f}, Confident - only location)")
+            return best_match_location
+    else:
+        logger.info(f"No confident location prediction (Best: '{best_match_location}', Min Score: {min_score:.2f}, Threshold: {CONFIDENCE_THRESHOLD})")
+        return None # Score too high or no best match found
 
 # --- Inference Logic ---
 def magnitude(vector):
@@ -349,6 +527,8 @@ class MultiSensorClient:
                       update_nested_data_with_grouping(nested_sensor_data, parts, status, is_status=True)
                  elif parts and parts[0]:
                       update_nested_data(nested_sensor_data, parts, status, is_status=True)
+            # Also update location prediction status
+            update_nested_data(nested_sensor_data, ['location', 'predicted'], status, is_status=True)
 
     def handle_message(self, message):
         try:
@@ -391,6 +571,37 @@ class MultiSensorClient:
                 state = current_node
                 parsed_values = None
                 raw_values = data.get('values')
+
+                # --- Handle Location Prediction --- START
+                # Check if this is a network scan type that can be used for prediction
+                is_predictive_scan = (
+                     normalized_sensor_type == 'android.sensor.wifi_scan' or
+                     normalized_sensor_type == 'android.sensor.network_scan'
+                )
+
+                current_scan_data_for_prediction = []
+                if is_predictive_scan:
+                    # Extract network data in the format required by calculate_similarity
+                    # This logic is similar to find_closest_network_data but simpler as it acts on a single message
+                    if normalized_sensor_type == 'android.sensor.wifi_scan' and isinstance(raw_values, list):
+                        current_scan_data_for_prediction.extend([
+                            {'type': 'wifi', 'id': res.get('bssid'), 'ssid': res.get('ssid'), 'rssi': res.get('rssi')}
+                            for res in raw_values if isinstance(res, dict) and res.get('bssid') and res.get('rssi') is not None
+                        ])
+                    elif normalized_sensor_type == 'android.sensor.network_scan' and isinstance(raw_values, dict):
+                        wifi_results = raw_values.get('wifiResults', [])
+                        bluetooth_results = raw_values.get('bluetoothResults', [])
+                        current_scan_data_for_prediction.extend([
+                            {'type': 'wifi', 'id': res.get('bssid'), 'ssid': res.get('ssid'), 'rssi': res.get('rssi')}
+                            for res in wifi_results if isinstance(res, dict) and res.get('bssid') and res.get('rssi') is not None
+                        ])
+                        current_scan_data_for_prediction.extend([
+                            {'type': 'bluetooth', 'id': res.get('address'), 'name': res.get('name'), 'rssi': res.get('rssi')}
+                            for res in bluetooth_results if isinstance(res, dict) and res.get('address') and res.get('rssi') is not None
+                        ])
+                    logger.debug(f"Extracted {len(current_scan_data_for_prediction)} networks for prediction from {normalized_sensor_type}")
+
+                # --- Handle standard sensor value parsing --- START
                 if isinstance(raw_values, list):
                     try:
                         parsed_values = [float(v) for v in raw_values]
@@ -400,13 +611,40 @@ class MultiSensorClient:
                      # Attempt conversion for single non-list values too
                     try: parsed_values = [float(raw_values)]
                     except (ValueError, TypeError): parsed_values = [str(raw_values)] # Fallback to string list
+                # --- Handle standard sensor value parsing --- END
 
                 state.previous_value = state.last_value
                 state.previous_timestamp = state.last_timestamp
-                state.last_value = parsed_values
+                # For network scans used in prediction, last_value could be the raw dict/list or parsed count
+                # For prediction, we use current_scan_data_for_prediction. For display/state, use parsed_values.
+                state.last_value = raw_values if is_predictive_scan else parsed_values
                 state.last_timestamp = timestamp
                 # Pass the full normalized path instead of just the base name
                 update_inferred_state(normalized_sensor_type, state)
+
+                # --- Perform and Update Location Prediction --- START
+                if is_predictive_scan and current_scan_data_for_prediction:
+                    predicted_loc = predict_location(current_scan_data_for_prediction)
+                    # Find the location.predicted state node
+                    loc_node = nested_sensor_data.get('location', {}).get('predicted')
+                    if isinstance(loc_node, SensorState):
+                         loc_node.previous_value = loc_node.last_value
+                         loc_node.previous_timestamp = loc_node.last_timestamp
+                         loc_node.last_value = predicted_loc if predicted_loc else "Unknown"
+                         loc_node.last_timestamp = timestamp
+                         loc_node.inferred_state = predicted_loc if predicted_loc else "Unknown"
+                         # Log state change for location
+                         log_entry = {
+                             "timestamp": timestamp.isoformat(),
+                             "sensor_path": "location.predicted",
+                             "previous_state": loc_node.previous_value if loc_node.previous_value else "Unknown",
+                             "new_state": loc_node.last_value
+                         }
+                         state_data_logger.info(json.dumps(log_entry))
+                    else:
+                        logger.warning("Could not find location.predicted SensorState node to update.")
+                # --- Perform and Update Location Prediction --- END
+
             else:
                 self.logger.warning(f"Could not find/update SensorState node for {grouped_parts}. Final check failed.")
 
@@ -553,8 +791,13 @@ async def run_sensor_clients(http_endpoint, ws_base_uri):
     global nested_sensor_data
     nested_sensor_data = {} # Ensure clean state if function is ever recalled
 
+    # Load fingerprints before initializing keys/starting clients
+    fingerprints_loaded = load_fingerprints(CALIBRATION_DATA_FILE)
+    if not fingerprints_loaded:
+        logger.warning("Fingerprints failed to load. Location prediction will be disabled.")
+
     standard_sensor_types = await get_available_sensors(http_endpoint)
-    # Note: get_available_sensors calls initialize_nested_keys
+    # Note: get_available_sensors calls initialize_nested_keys, which now includes location.predicted
 
     tasks = []
     if standard_sensor_types:
