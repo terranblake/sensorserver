@@ -68,6 +68,11 @@ except ImportError as e:
 # Use a standard dict for nested structure
 nested_sensor_data = {}
 location_fingerprints = {} # For storing loaded location fingerprints
+# Store the latest data needed for on-demand score calculation
+latest_network_data_for_scoring = []
+latest_pressure_for_scoring = None
+latest_data_timestamp = None
+
 # TODO: Consider passing this state or encapsulating it in a class for better management
 
 # --- Sensor State Class ---
@@ -359,6 +364,30 @@ def predict_location(current_network_data, current_pressure_value=None):
     else:
         logger.info(f"No confident location prediction (Best: '{best_match_location}', Min Score: {min_score:.2f}, Threshold: {CONFIDENCE_THRESHOLD})")
         return None # Score too high or no best match found
+
+def get_all_location_scores(current_network_data, current_pressure_value=None):
+    """
+    Calculates and returns the similarity scores for all known locations.
+    Returns a dictionary {location: score} or None if prediction is not possible.
+    """
+    if not location_fingerprints:
+        logger.debug("Score calculation skipped: No location fingerprints loaded.")
+        return None
+
+    if not current_network_data:
+        logger.debug("Score calculation skipped: No current network data provided.")
+        return None
+
+    scores = {}
+    logger.debug(f"Calculating all scores based on {len(current_network_data)} networks and pressure {current_pressure_value:.2f} hPa" if current_pressure_value else f"Calculating all scores based on {len(current_network_data)} networks (no pressure)")
+    for location, fingerprint in location_fingerprints.items():
+        # Use the same calculate_similarity function used for prediction
+        score = calculate_similarity(current_network_data, current_pressure_value, fingerprint)
+        scores[location] = score
+        # Optional: Remove individual score logging here if too verbose for API calls
+        # logger.info(f"Location \'{location}\' score: {score:.2f}")
+
+    return scores
 
 # --- Inference Logic ---
 def magnitude(vector):
@@ -676,77 +705,56 @@ class MultiSensorClient:
                 # Pass the full normalized path instead of just the base name
                 update_inferred_state(normalized_sensor_type, state)
 
-                # --- Perform and Update Location Prediction --- START
-                if is_predictive_scan and current_scan_data_for_prediction:
-                    # --- Retrieve current pressure --- START
-                    current_pressure = None
-                    current_pressure_timestamp = None
-                    try:
-                        # Access the pressure state directly from the global structure
-                        pressure_state = nested_sensor_data.get('environment', {}).get('pressure')
-                        if isinstance(pressure_state, SensorState):
-                            # Check if last_value exists and is a list/tuple with at least one element
-                            if pressure_state.last_value and isinstance(pressure_state.last_value, (list, tuple)) and len(pressure_state.last_value) > 0:
-                                raw_pressure = pressure_state.last_value[0]
-                                if isinstance(raw_pressure, (int, float)):
-                                     current_pressure = raw_pressure
-                                     current_pressure_timestamp = pressure_state.last_timestamp
-                                else:
-                                    logger.debug("Current pressure value in state is not numeric")
-                            else:
-                                logger.debug("Current pressure state has no valid last_value list/tuple")
+                # --- Store latest data for scoring API --- START
+                if is_predictive_scan:
+                    global latest_network_data_for_scoring, latest_data_timestamp
+                    latest_network_data_for_scoring = current_scan_data_for_prediction
+                    latest_data_timestamp = timestamp # Store timestamp of this data
+                # Store latest pressure value separately if available
+                if normalized_sensor_type == PRESSURE_SENSOR_TYPE and state.last_value and isinstance(state.last_value[0], (int, float)):
+                     global latest_pressure_for_scoring
+                     latest_pressure_for_scoring = state.last_value[0]
+                     # We already have latest_data_timestamp from network scan, assume pressure is close enough
+                # --- Store latest data for scoring API --- END
+
+                # --- Perform Prediction & Update State (using latest stored data) --- START
+                # This part remains similar, but uses the globally stored latest data for consistency
+                if is_predictive_scan and latest_network_data_for_scoring:
+                    # Check age of data used for prediction
+                    pressure_to_predict_with = None
+                    if latest_pressure_for_scoring is not None and latest_data_timestamp is not None:
+                        if (timestamp - latest_data_timestamp).total_seconds() < MAX_PRESSURE_AGE_SECONDS:
+                            pressure_to_predict_with = latest_pressure_for_scoring
                         else:
-                            logger.debug("Pressure state node is not a SensorState object")
-                    except KeyError:
-                        logger.debug("Pressure sensor state path not found in nested_sensor_data ('environment.pressure')")
-                    except Exception as e:
-                        logger.error(f"Error retrieving current pressure state: {e}", exc_info=True)
+                            logger.debug(f"Latest pressure data is too old for prediction ({ (timestamp - latest_data_timestamp).total_seconds():.1f}s)")
+                            # If pressure is stale, reset the global value too
+                            latest_pressure_for_scoring = None
 
-                    # Check pressure age
-                    pressure_value_to_use = None
-                    if current_pressure is not None and current_pressure_timestamp is not None:
-                         now = datetime.now()
-                         if isinstance(current_pressure_timestamp, datetime):
-                             pressure_age = now - current_pressure_timestamp
-                             if pressure_age.total_seconds() <= MAX_PRESSURE_AGE_SECONDS:
-                                 pressure_value_to_use = current_pressure
-                                 logger.debug(f"Using current pressure {pressure_value_to_use:.2f} hPa (Age: {pressure_age.total_seconds():.1f}s)")
-                             else:
-                                 logger.debug(f"Stale pressure reading (Age: {pressure_age.total_seconds():.1f}s > {MAX_PRESSURE_AGE_SECONDS}s). Not using for prediction.")
-                         else:
-                             logger.warning("Pressure timestamp is not a datetime object.")
-                    else:
-                        logger.debug("No current pressure value or timestamp available for age check.")
-                    # --- Retrieve current pressure --- END
+                    predicted_loc = predict_location(latest_network_data_for_scoring, pressure_to_predict_with)
 
-                    # --- Call prediction with pressure --- START
-                    predicted_loc = predict_location(current_scan_data_for_prediction, pressure_value_to_use)
-                    # --- Call prediction with pressure --- END
-
-                    # Find the location.predicted state node
+                    # Find the location.predicted state node and update it
                     loc_node = nested_sensor_data.get('location', {}).get('predicted')
                     if isinstance(loc_node, SensorState):
-                         loc_node.previous_value = loc_node.last_value
-                         loc_node.previous_timestamp = loc_node.last_timestamp
-                         # Store the prediction result
-                         new_loc_state_value = predicted_loc if predicted_loc else "Unknown"
-                         loc_node.last_value = new_loc_state_value
-                         loc_node.last_timestamp = timestamp
-                         loc_node.inferred_state = new_loc_state_value # Use the same for inferred state
-                         # Log state change for location prediction
-                         # Avoid logging if state hasn't actually changed
-                         prev_loc_state_value = loc_node.previous_value if loc_node.previous_value else "Unknown"
-                         if prev_loc_state_value != new_loc_state_value:
-                             log_entry = {
-                                 "timestamp": timestamp.isoformat(),
-                                 "sensor_path": "location.predicted",
-                                 "previous_state": prev_loc_state_value,
-                                 "new_state": new_loc_state_value
-                             }
-                             state_data_logger.info(json.dumps(log_entry))
+                        new_loc_state_value = predicted_loc if predicted_loc else "Unknown"
+                        # Update only if changed to avoid triggering unnecessary logs/updates
+                        if loc_node.last_value != new_loc_state_value:
+                            loc_node.previous_value = loc_node.last_value
+                            loc_node.previous_timestamp = loc_node.last_timestamp
+                            loc_node.last_value = new_loc_state_value
+                            loc_node.last_timestamp = timestamp # Use current message timestamp for state update time
+                            loc_node.inferred_state = new_loc_state_value
+                            # Log state change (handled by update_inferred_state implicitly if we call it? No, need explicit log)
+                            prev_loc_state_value = loc_node.previous_value if loc_node.previous_value else "Unknown"
+                            log_entry = {
+                                "timestamp": timestamp.isoformat(),
+                                "sensor_path": "location.predicted",
+                                "previous_state": prev_loc_state_value,
+                                "new_state": new_loc_state_value
+                            }
+                            state_data_logger.info(json.dumps(log_entry))
                     else:
                         logger.warning("Could not find location.predicted SensorState node to update.")
-                # --- Perform and Update Location Prediction --- END
+                # --- Perform Prediction & Update State --- END
 
             else:
                 self.logger.warning(f"Could not find/update SensorState node for {grouped_parts}. Final check failed.")

@@ -142,6 +142,12 @@ def submit_event():
     # Redirect back to the main page regardless of success/failure for simplicity
     return redirect(url_for('index'))
 
+@app.route('/inference')
+def inference():
+    """Displays the location inference results page."""
+    # Initial state can be passed if needed, but likely JS will fetch dynamically
+    return render_template('inference_page.html')
+
 @app.route('/start_auto_event_logging', methods=['POST'])
 def start_auto_event_logging():
     """Handles request to start automatic event logging for a duration."""
@@ -288,13 +294,35 @@ def logs_data():
 
 @app.route('/state/data')
 def state_data():
-    """API endpoint to fetch current sensor state data."""
+    """API endpoint to fetch current sensor state data and location scores."""
+    all_scores = None
     with data_lock:
         # Create a deep copy for thread safety before returning
         current_state = copy.deepcopy(sensor_logic.nested_sensor_data)
+        # Get latest data needed for scoring
+        network_data = sensor_logic.latest_network_data_for_scoring
+        pressure_value = sensor_logic.latest_pressure_for_scoring
+        data_timestamp = sensor_logic.latest_data_timestamp
+
+    # Calculate scores outside the lock
+    if network_data:
+        # Check timestamp validity if needed (e.g., ensure data isn't too old)
+        # For now, assume data stored is recent enough if present
+        logger.debug(f"Calculating scores for API based on data from {data_timestamp}")
+        all_scores = sensor_logic.get_all_location_scores(network_data, pressure_value)
+    else:
+        logger.debug("Skipping score calculation for API: No recent network data available.")
+
     # Convert SensorState objects before jsonify
     serializable_state = make_state_serializable(current_state)
-    logger.debug(f"Returning /state/data: {json.dumps(serializable_state, indent=2)}") # DEBUG LOG
+
+    # Add the calculated scores to the response
+    if all_scores is not None:
+         serializable_state['location_scores'] = all_scores
+    else:
+         serializable_state['location_scores'] = {} # Ensure key exists
+
+    logger.debug(f"Returning /state/data with scores: {json.dumps(serializable_state, indent=2)}") # DEBUG LOG
     return jsonify(serializable_state)
 
 @app.route('/logs/stream')

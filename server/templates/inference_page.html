@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}Location Inference{% endblock %}
+
+{% block content %}
+<div class="bg-light p-5 rounded">
+    <h1>Location Inference</h1>
+    <p class="lead">Real-time location prediction based on sensor fingerprints.</p>
+
+    <div class="row">
+        <div class="col-md-6">
+            <h2>Current Prediction</h2>
+            <h3 id="currentPrediction">Loading...</h3>
+            <p id="predictionConfidence" class="text-muted"></p>
+        </div>
+        <div class="col-md-6">
+            <h2>All Location Scores</h2>
+            <p class="text-muted">(Lower score is better)</p>
+            <ul id="scoreList" class="list-group"></ul>
+            <p id="inferenceError" class="text-danger" style="display: none;"></p>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const currentPredictionEl = document.getElementById('currentPrediction');
+    const predictionConfidenceEl = document.getElementById('predictionConfidence');
+    const scoreListEl = document.getElementById('scoreList');
+    const inferenceErrorEl = document.getElementById('inferenceError');
+
+    async function updateInferenceData() {
+        try {
+            const response = await fetch('/state/data'); // Fetch the state data
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const stateData = await response.json();
+
+            inferenceErrorEl.style.display = 'none'; // Hide error on success
+
+            // Update Current Prediction Display
+            let prediction = "Unknown";
+            let confidence = "No prediction available.";
+            if (stateData.location && stateData.location.predicted && stateData.location.predicted.inferred_state) {
+                prediction = stateData.location.predicted.inferred_state;
+                // TODO: Enhance confidence display based on scores later
+                confidence = prediction !== "Unknown" ? "Based on latest sensor data." : "No confident prediction available.";
+            }
+            currentPredictionEl.textContent = prediction;
+            predictionConfidenceEl.textContent = confidence;
+
+            // Update Scores List Display
+            scoreListEl.innerHTML = ''; // Clear previous list
+            if (stateData.location_scores && typeof stateData.location_scores === 'object') {
+                const scores = stateData.location_scores;
+                const sortedLocations = Object.entries(scores).sort(([, scoreA], [, scoreB]) => scoreA - scoreB);
+
+                if (sortedLocations.length > 0) {
+                    sortedLocations.forEach(([location, score]) => {
+                        const listItem = document.createElement('li');
+                        listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+                        listItem.textContent = location;
+                        const scoreBadge = document.createElement('span');
+                        scoreBadge.className = 'badge bg-primary rounded-pill';
+                        scoreBadge.textContent = score.toFixed(2);
+                        listItem.appendChild(scoreBadge);
+                        // Highlight the best prediction in the list
+                        if (location === prediction && prediction !== "Unknown") {
+                            listItem.classList.add('active');
+                        }
+                        scoreListEl.appendChild(listItem);
+                    });
+                } else {
+                    scoreListEl.innerHTML = '<li class="list-group-item">No scores calculated yet.</li>';
+                }
+            } else {
+                scoreListEl.innerHTML = '<li class="list-group-item">Score data not available.</li>';
+            }
+
+        } catch (error) {
+            console.error('Error updating inference data:', error);
+            currentPredictionEl.textContent = 'Error';
+            predictionConfidenceEl.textContent = '';
+            scoreListEl.innerHTML = '';
+            inferenceErrorEl.textContent = `Error fetching data: ${error.message}`;
+            inferenceErrorEl.style.display = 'block';
+        }
+    }
+
+    // Update the data every 2 seconds
+    setInterval(updateInferenceData, 2000);
+
+    // Initial update on load
+    document.addEventListener('DOMContentLoaded', updateInferenceData);
+
+</script>
+{% endblock %} 
