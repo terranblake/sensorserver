@@ -179,7 +179,7 @@ def start_auto_log():
             auto_log_state['active'] = True
             auto_log_state['end_time'] = now + timedelta(seconds=duration)
             auto_log_state['description'] = description # Store the description
-            logger.info(f"Starting automatic sensor logging for {duration} seconds until {auto_log_state['end_time']} with description: '{description if description else "<none>"}'.")
+            logger.info(f"Starting automatic sensor logging for {duration} seconds until {auto_log_state['end_time']} with description: {description if description else '<none>'}.")
 
             # Schedule stop function
             auto_log_timer = threading.Timer(duration, stop_auto_log)
