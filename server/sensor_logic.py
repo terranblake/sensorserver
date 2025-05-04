@@ -660,22 +660,11 @@ class MultiSensorClient:
                             log_event_automatically = True
 
                 if log_event_automatically:
-                    # --- Get current predicted location --- START
-                    current_predicted_location = "Unknown"
-                    try:
-                        loc_node = nested_sensor_data.get('location', {}).get('predicted')
-                        if isinstance(loc_node, SensorState) and loc_node.last_value is not None:
-                            current_predicted_location = loc_node.last_value
-                    except Exception as e:
-                        logger.error(f"Error retrieving predicted location state for auto-log: {e}")
-                    # --- Get current predicted location --- END
-
                     auto_log_entry = {
                         "timestamp": timestamp.isoformat(),
                         "event_type": "auto_log_sensor_update",
                         "sensor_path": normalized_sensor_type,
                         "description": self.auto_log_state.get('description', ''),
-                        "predicted_location": current_predicted_location,
                         "raw_data": data
                     }
                     event_data_logger.info(json.dumps(auto_log_entry))
@@ -895,22 +884,11 @@ class GpsClient:
                             log_event_automatically = True
 
                 if log_event_automatically:
-                    # --- Get current predicted location --- START
-                    current_predicted_location = "Unknown"
-                    try:
-                        loc_node = nested_sensor_data.get('location', {}).get('predicted')
-                        if isinstance(loc_node, SensorState) and loc_node.last_value is not None:
-                            current_predicted_location = loc_node.last_value
-                    except Exception as e:
-                        logger.error(f"Error retrieving predicted location state for GPS auto-log: {e}")
-                    # --- Get current predicted location --- END
-
                     auto_log_entry = {
                         "timestamp": timestamp.isoformat(),
                         "event_type": "auto_log_sensor_update",
                         "sensor_path": normalized_sensor_type,
                         "description": self.auto_log_state.get('description', ''),
-                        "predicted_location": current_predicted_location,
                         "raw_data": data
                     }
                     event_data_logger.info(json.dumps(auto_log_entry))
