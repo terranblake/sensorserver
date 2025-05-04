@@ -26,35 +26,38 @@
 {% block content %}
 <div class="bg-light p-5 rounded">
     <h1>Sensor State & Event Annotation</h1>
-    <p class="lead">Current sensor states update below. Use manual event logging or trigger automatic logging for a duration.</p>
-
-    <div class="row mb-4">
-        <div class="col-md-8">
-            <div class="input-group">
-                <span class="input-group-text">Auto-Log Duration (s)</span>
-                <input type="number" class="form-control" id="autoLogDuration" value="5" min="1" max="300">
-                <button class="btn btn-secondary" type="button" id="startAutoLogBtn">Start Auto-Logging</button>
-            </div>
-            <div id="autoLogStatus" class="form-text"></div>
-        </div>
-    </div>
-
+    <p class="lead">Current sensor states update below. Select sensors involved and add a description to log an event, or start auto-logging state changes.</p>
+    
     <div class="row">
         <div class="col-md-12"> {# Full width column for the form #}
             <h2>Log Event</h2>
-            <form action="/submit_event" method="post">
+            <form action="/submit_event" method="post" id="manual-event-form">
                 <div class="mb-3">
-                    <label for="description" class="form-label">Description</label>
-                    <textarea class="form-control" id="description" name="description" rows="3" required></textarea>
+                    <label for="description" class="form-label">Manual Event Description</label>
+                    <textarea class="form-control" id="description" name="description" rows="2" required></textarea>
                 </div>
+
+                <!-- Auto-Logging Controls -->
+                <div class="row g-2 mb-3 align-items-end">
+                     <div class="col-auto">
+                         <label for="auto-log-duration" class="form-label">Auto-Log Duration (s)</label>
+                         <input type="number" class="form-control" id="auto-log-duration" value="5" min="1" max="60">
+                     </div>
+                     <div class="col-auto">
+                         <button type="button" class="btn btn-secondary" id="auto-log-button">Auto-Log State Changes</button>
+                     </div>
+                     <div class="col-auto" id="auto-log-status" style="font-style: italic; display: none;">
+                         Logging...
+                     </div>
+                </div>
+
                 <div class="mb-3 sensor-tree">
-                    <label class="form-label">Select Involved Sensors (State updates in real-time):</label>
+                    <label class="form-label">Select Involved Sensors for Manual Event (State updates in real-time):</label>
                     {# Call the macro here, inside the form #}
-                    {# {{ display_sensor_tree(sensor_state_data) }} -- REMOVED #}
                     <div id="sensor-tree-content"></div> {# Container for JS rendering #}
                     <p class="text-danger update-error" style="display: none;"></p> {# Placeholder for JS errors #}
                 </div>
-                <button type="submit" class="btn btn-primary">Submit Event</button>
+                <button type="submit" class="btn btn-primary">Submit Manual Event</button>
             </form>
         </div>
     </div>
@@ -65,9 +68,9 @@
 <script>
     const sensorTreeContent = document.getElementById('sensor-tree-content');
     const errorDisplayElement = document.querySelector('.update-error');
-    const autoLogDurationInput = document.getElementById('autoLogDuration');
-    const startAutoLogBtn = document.getElementById('startAutoLogBtn');
-    const autoLogStatus = document.getElementById('autoLogStatus');
+    const autoLogButton = document.getElementById('auto-log-button');
+    const autoLogDurationInput = document.getElementById('auto-log-duration');
+    const autoLogStatus = document.getElementById('auto-log-status');
 
     // Function to recursively build HTML string for the sensor tree
     function buildSensorTreeHtml(node, path = '') {
@@ -145,63 +148,64 @@
         }
     }
 
-    // Update the tree every 2 seconds
-    setInterval(updateSensorTree, 2000); 
+    // --- Auto-Logging Button Logic ---
+    let autoLogTimerId = null;
 
-    // Initial update on load
-    document.addEventListener('DOMContentLoaded', updateSensorTree);
-
-    // --- Auto Logging --- //
-    startAutoLogBtn.addEventListener('click', async () => {
-        const duration = parseFloat(autoLogDurationInput.value);
-        if (isNaN(duration) || duration <= 0 || duration > 300) {
-            autoLogStatus.textContent = 'Error: Invalid duration (must be > 0 and <= 300).';
-            autoLogStatus.className = 'form-text text-danger';
+    async function startAutoLogging() {
+        const duration = parseInt(autoLogDurationInput.value, 10);
+        if (isNaN(duration) || duration <= 0) {
+            alert('Please enter a valid positive duration.');
             return;
         }
 
-        startAutoLogBtn.disabled = true;
-        autoLogDurationInput.disabled = true;
-        autoLogStatus.textContent = `Requesting auto-log for ${duration}s...`;
-        autoLogStatus.className = 'form-text text-info';
+        autoLogButton.disabled = true;
+        autoLogStatus.textContent = `Logging changes for ${duration}s...`;
+        autoLogStatus.style.display = 'inline';
 
         try {
-            const formData = new FormData();
-            formData.append('duration', duration);
-
-            const response = await fetch('/start_auto_log', {
+            const response = await fetch('/start_auto_event_logging', {
                 method: 'POST',
-                body: formData
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded', // Use form encoding
+                },
+                body: `duration=${duration}` // Send duration as form data
             });
 
-            const result = await response.json();
-
-            if (response.ok && result.success) {
-                autoLogStatus.textContent = `Auto-logging active for ${duration}s...`;
-                autoLogStatus.className = 'form-text text-success';
-                // Use setTimeout on the client side to update UI after duration
-                setTimeout(() => {
-                    startAutoLogBtn.disabled = false;
-                    autoLogDurationInput.disabled = false;
-                    startAutoLogBtn.textContent = 'Start Auto-Logging';
-                    autoLogStatus.textContent = 'Auto-logging finished.';
-                    autoLogStatus.className = 'form-text text-muted';
-                     // Optionally clear status after a few more seconds
-                     setTimeout(() => { autoLogStatus.textContent = ''; }, 3000);
-                }, duration * 1000);
-                 startAutoLogBtn.textContent = `Logging for ${duration}s...`;
-            } else {
-                throw new Error(result.error || 'Failed to start auto-logging.');
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Unknown error starting auto-log' }));
+                throw new Error(errorData.error || `HTTP error ${response.status}`);
             }
+
+            const result = await response.json();
+            console.log('Auto-logging started:', result);
+
+            // Clear previous timer if any (safety check)
+            if (autoLogTimerId) clearTimeout(autoLogTimerId);
+
+            // Set a timer to re-enable the button and hide status
+            autoLogTimerId = setTimeout(() => {
+                autoLogButton.disabled = false;
+                autoLogStatus.style.display = 'none';
+                autoLogTimerId = null;
+            }, duration * 1000);
+
         } catch (error) {
-            console.error('Error starting auto-log:', error);
-            autoLogStatus.textContent = `Error: ${error.message}`;
-            autoLogStatus.className = 'form-text text-danger';
-            startAutoLogBtn.disabled = false;
-            autoLogDurationInput.disabled = false;
-             startAutoLogBtn.textContent = 'Start Auto-Logging';
+            console.error('Error starting auto-logging:', error);
+            alert(`Error starting auto-logging: ${error.message}`);
+            // Re-enable button immediately on error
+            autoLogButton.disabled = false;
+            autoLogStatus.style.display = 'none';
         }
-    });
+    }
+
+    autoLogButton.addEventListener('click', startAutoLogging);
+
+    // --- Initial Update ---
+    // Update the tree every 2 seconds
+    setInterval(updateSensorTree, 2000);
+
+    // Initial update on load
+    document.addEventListener('DOMContentLoaded', updateSensorTree);
 
 </script>
 {% endblock %}
