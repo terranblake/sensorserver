@@ -5,7 +5,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, R
 import threading
 import asyncio
 import copy
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 import time
@@ -17,8 +17,8 @@ import sensor_logic
 # --- Configuration ---
 # TODO: Move to a config file or environment variables
 SERVER_ADDRESS = "10.0.0.2"  # This needs to match your Android device's actual IP
-HTTP_PORT = 9090  # Android app's DEFAULT_HTTP_PORT_NO in AppSettings.kt
-WS_PORT = 8080    # Android app's DEFAULT_WEBSOCKET_PORT_NO in AppSettings.kt
+HTTP_PORT = 9091  # Android app's DEFAULT_HTTP_PORT_NO in AppSettings.kt
+WS_PORT = 8081    # Android app's DEFAULT_WEBSOCKET_PORT_NO in AppSettings.kt
 HTTP_ENDPOINT = f"http://{SERVER_ADDRESS}:{HTTP_PORT}/sensors"
 WS_BASE_URI = f"ws://{SERVER_ADDRESS}:{WS_PORT}"
 RAW_LOG_FILE = "raw_data.log"
@@ -68,6 +68,9 @@ logging.getLogger("websockets.client").setLevel(logging.WARNING)
 # Access shared data directly from the sensor_logic module
 # The lock is primarily for Flask routes accessing the data while sensor_logic modifies it
 data_lock = threading.Lock()
+# Shared event for auto-logging control
+auto_logging_event = threading.Event() # Starts clear/False
+auto_logging_timer = None # Holds the timer object
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -138,6 +141,48 @@ def submit_event():
 
     # Redirect back to the main page regardless of success/failure for simplicity
     return redirect(url_for('index'))
+
+@app.route('/start_auto_event_logging', methods=['POST'])
+def start_auto_event_logging():
+    """Handles request to start automatic event logging for a duration."""
+    global auto_logging_timer # Allow modification of the global timer object
+    try:
+        duration_str = request.form.get('duration')
+        if not duration_str:
+            return jsonify({"error": "Missing duration"}), 400
+        
+        duration = float(duration_str)
+        if duration <= 0 or duration > 300: # Add a reasonable upper limit (e.g., 5 minutes)
+            return jsonify({"error": "Invalid duration (must be > 0 and <= 300 seconds)"}), 400
+
+        # Cancel any existing timer
+        with data_lock: # Lock needed if timer callback modifies shared state (it clears the event)
+            if auto_logging_timer:
+                auto_logging_timer.cancel()
+                logger.info("Cancelled previous auto-logging timer.")
+
+            # Define the action for the timer: clear the event
+            def clear_event():
+                global auto_logging_timer
+                auto_logging_event.clear()
+                auto_logging_timer = None # Clear the timer variable once done
+                logger.info(f"Auto-logging period of {duration}s finished. Event cleared.")
+
+            # Set the event to signal start
+            auto_logging_event.set()
+            logger.info(f"Starting auto-logging of state changes for {duration} seconds.")
+
+            # Start the new timer
+            auto_logging_timer = threading.Timer(duration, clear_event)
+            auto_logging_timer.start()
+
+        return jsonify({"status": "started", "duration": duration}), 200
+
+    except ValueError:
+        return jsonify({"error": "Invalid duration format"}), 400
+    except Exception as e:
+        logger.error(f"Error starting auto-event logging: {e}", exc_info=True)
+        return jsonify({"error": "Internal server error"}), 500
 
 # --- Log Reading Helper ---
 def read_last_n_lines(filename, n=100):

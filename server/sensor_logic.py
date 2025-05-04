@@ -11,6 +11,7 @@ from datetime import datetime, timedelta # For ISO timestamp and timedelta
 import math # For vector magnitude
 import os # For file handler path
 import statistics # For median/stdev in fingerprint loading
+import sys
 
 # --- Configuration (Moved from all_sensors.py) ---
 # Server details (Will be passed in or configured differently later)
@@ -49,6 +50,19 @@ raw_data_logger.propagate = False # Prevent duplication if root logger is config
 # Specific logger for state changes - will be configured by the main application
 state_data_logger = logging.getLogger("state_data")
 state_data_logger.propagate = False
+
+# Import the shared event from the server module
+# This assumes server.py is run from the project root and sensor_logic is in a 'server' subdir
+# Adjust the import if the structure is different
+try:
+    from server import auto_logging_event, event_data_logger # Import event and logger
+except ImportError as e:
+    # Fallback if run standalone or structure changes - create a dummy event/logger
+    logger.warning(f"Could not import from server module ({e}). Auto-event logging disabled.")
+    import threading
+    auto_logging_event = threading.Event() # Dummy event, always False
+    event_data_logger = logging.getLogger("dummy_event_data") # Dummy logger
+    event_data_logger.addHandler(logging.NullHandler())
 
 # --- Shared State ---
 # Use a standard dict for nested structure
@@ -480,6 +494,22 @@ def update_inferred_state(normalized_sensor_path: str, state: SensorState):
             "new_state": new_state
         }
         state_data_logger.info(json.dumps(log_entry))
+
+        # --- Auto-Event Logging --- START
+        if auto_logging_event.is_set():
+            try:
+                auto_log_entry = {
+                    "timestamp": now.isoformat(),
+                    "event_type": "auto_state_change",
+                    "sensor_path": normalized_sensor_path,
+                    "new_state": new_state,
+                    "previous_state": previous_state
+                }
+                event_data_logger.info(json.dumps(auto_log_entry))
+                logger.debug(f"Auto-logged state change for {normalized_sensor_path} to {new_state}")
+            except Exception as log_err:
+                 logger.error(f"Failed to auto-log state change event: {log_err}", exc_info=True)
+        # --- Auto-Event Logging --- END
 
 # --- Sensor Discovery ---
 async def get_available_sensors(http_url):
