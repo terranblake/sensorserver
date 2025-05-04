@@ -68,9 +68,11 @@ logging.getLogger("websockets.client").setLevel(logging.WARNING)
 # Access shared data directly from the sensor_logic module
 # The lock is primarily for Flask routes accessing the data while sensor_logic modifies it
 data_lock = threading.Lock()
-# Shared event for auto-logging control
-auto_logging_event = threading.Event() # Starts clear/False
-auto_logging_timer = None # Holds the timer object
+# State for automatic logging
+auto_log_state = {
+    'active': False,
+    'end_time': None
+}
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -83,10 +85,9 @@ def run_sensor_loop():
         # Create a new event loop for this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        # Run the sensor logic's main function (or a dedicated entry point)
-        # Pass necessary config. We might need to refactor run_standalone or create a new entry point.
-        # For now, adapting the existing run_standalone concept:
-        loop.run_until_complete(sensor_logic.run_sensor_clients(HTTP_ENDPOINT, WS_BASE_URI))
+        # Run the sensor logic's main function
+        # Pass lock and auto-log state reference to sensor logic
+        loop.run_until_complete(sensor_logic.run_sensor_clients(HTTP_ENDPOINT, WS_BASE_URI, data_lock, auto_log_state))
     except Exception as e:
         logger.critical(f"Sensor logic thread encountered a critical error: {e}", exc_info=True)
     finally:
@@ -142,47 +143,51 @@ def submit_event():
     # Redirect back to the main page regardless of success/failure for simplicity
     return redirect(url_for('index'))
 
-@app.route('/start_auto_event_logging', methods=['POST'])
-def start_auto_event_logging():
-    """Handles request to start automatic event logging for a duration."""
-    global auto_logging_timer # Allow modification of the global timer object
+# --- Auto Logging Control --- #
+auto_log_timer = None # Keep track of the timer
+
+def stop_auto_log():
+    """Callback function to stop auto-logging."""
+    global auto_log_timer
+    with data_lock:
+        if auto_log_state['active']:
+             logger.info("Automatic sensor logging period finished.")
+             auto_log_state['active'] = False
+             auto_log_state['end_time'] = None
+             auto_log_timer = None # Clear the timer reference
+
+@app.route('/start_auto_log', methods=['POST'])
+def start_auto_log():
+    """Starts a period of automatic sensor change logging."""
+    global auto_log_timer
     try:
-        duration_str = request.form.get('duration')
-        if not duration_str:
-            return jsonify({"error": "Missing duration"}), 400
-        
-        duration = float(duration_str)
-        if duration <= 0 or duration > 300: # Add a reasonable upper limit (e.g., 5 minutes)
-            return jsonify({"error": "Invalid duration (must be > 0 and <= 300 seconds)"}), 400
+        duration = float(request.form.get('duration', 5.0)) # Default 5s
+        if duration <= 0 or duration > 300: # Basic validation (e.g., max 5 mins)
+            return jsonify({"error": "Invalid duration (must be > 0 and <= 300 seconds)."}), 400
 
-        # Cancel any existing timer
-        with data_lock: # Lock needed if timer callback modifies shared state (it clears the event)
-            if auto_logging_timer:
-                auto_logging_timer.cancel()
-                logger.info("Cancelled previous auto-logging timer.")
+        with data_lock:
+            # Cancel previous timer if one exists
+            if auto_log_timer is not None:
+                 auto_log_timer.cancel()
+                 logger.info("Cancelled previous auto-log timer.")
 
-            # Define the action for the timer: clear the event
-            def clear_event():
-                global auto_logging_timer
-                auto_logging_event.clear()
-                auto_logging_timer = None # Clear the timer variable once done
-                logger.info(f"Auto-logging period of {duration}s finished. Event cleared.")
+            now = datetime.now()
+            auto_log_state['active'] = True
+            auto_log_state['end_time'] = now + timedelta(seconds=duration)
+            logger.info(f"Starting automatic sensor logging for {duration} seconds until {auto_log_state['end_time']}.")
 
-            # Set the event to signal start
-            auto_logging_event.set()
-            logger.info(f"Starting auto-logging of state changes for {duration} seconds.")
+            # Schedule stop function
+            auto_log_timer = threading.Timer(duration, stop_auto_log)
+            auto_log_timer.daemon = True # Allow program to exit even if timer is pending
+            auto_log_timer.start()
 
-            # Start the new timer
-            auto_logging_timer = threading.Timer(duration, clear_event)
-            auto_logging_timer.start()
-
-        return jsonify({"status": "started", "duration": duration}), 200
+        return jsonify({"success": True, "message": f"Auto-logging started for {duration}s."})
 
     except ValueError:
-        return jsonify({"error": "Invalid duration format"}), 400
+        return jsonify({"error": "Invalid duration format."}), 400
     except Exception as e:
-        logger.error(f"Error starting auto-event logging: {e}", exc_info=True)
-        return jsonify({"error": "Internal server error"}), 500
+        logger.error(f"Error starting auto-log: {e}", exc_info=True)
+        return jsonify({"error": "Internal server error starting auto-log."}), 500
 
 # --- Log Reading Helper ---
 def read_last_n_lines(filename, n=100):
@@ -364,4 +369,5 @@ if __name__ == '__main__':
 
     logger.info(f"Starting Flask server on {FLASK_HOST}:{FLASK_PORT}...")
     # Turn off Flask's reloader when running sensor thread this way
-    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=True, use_reloader=False) 
+    # Debug=True is useful for development but can cause issues with threads/timers
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=False, use_reloader=False) 

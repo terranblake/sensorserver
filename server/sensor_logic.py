@@ -11,7 +11,8 @@ from datetime import datetime, timedelta # For ISO timestamp and timedelta
 import math # For vector magnitude
 import os # For file handler path
 import statistics # For median/stdev in fingerprint loading
-import sys
+import threading # Import threading for Lock type hint
+from typing import Dict, Any, Optional # For type hinting
 
 # --- Configuration (Moved from all_sensors.py) ---
 # Server details (Will be passed in or configured differently later)
@@ -50,19 +51,6 @@ raw_data_logger.propagate = False # Prevent duplication if root logger is config
 # Specific logger for state changes - will be configured by the main application
 state_data_logger = logging.getLogger("state_data")
 state_data_logger.propagate = False
-
-# Import the shared event from the server module
-# This assumes server.py is run from the project root and sensor_logic is in a 'server' subdir
-# Adjust the import if the structure is different
-try:
-    from server import auto_logging_event, event_data_logger # Import event and logger
-except ImportError as e:
-    # Fallback if run standalone or structure changes - create a dummy event/logger
-    logger.warning(f"Could not import from server module ({e}). Auto-event logging disabled.")
-    import threading
-    auto_logging_event = threading.Event() # Dummy event, always False
-    event_data_logger = logging.getLogger("dummy_event_data") # Dummy logger
-    event_data_logger.addHandler(logging.NullHandler())
 
 # --- Shared State ---
 # Use a standard dict for nested structure
@@ -495,22 +483,6 @@ def update_inferred_state(normalized_sensor_path: str, state: SensorState):
         }
         state_data_logger.info(json.dumps(log_entry))
 
-        # --- Auto-Event Logging --- START
-        if auto_logging_event.is_set():
-            try:
-                auto_log_entry = {
-                    "timestamp": now.isoformat(),
-                    "event_type": "auto_state_change",
-                    "sensor_path": normalized_sensor_path,
-                    "new_state": new_state,
-                    "previous_state": previous_state
-                }
-                event_data_logger.info(json.dumps(auto_log_entry))
-                logger.debug(f"Auto-logged state change for {normalized_sensor_path} to {new_state}")
-            except Exception as log_err:
-                 logger.error(f"Failed to auto-log state change event: {log_err}", exc_info=True)
-        # --- Auto-Event Logging --- END
-
 # --- Sensor Discovery ---
 async def get_available_sensors(http_url):
     logger.info(f"Attempting to fetch sensor list from {http_url}")
@@ -540,12 +512,14 @@ async def get_available_sensors(http_url):
 # --- WebSocket Client Classes ---
 
 class MultiSensorClient:
-    def __init__(self, base_uri, sensor_types):
+    def __init__(self, base_uri, sensor_types, lock: threading.Lock, auto_log_state_ref: Dict[str, Any]):
         self.sensor_types = sensor_types # Keep original list for error handling
         types_json_string = json.dumps(self.sensor_types)
         query_params = urlencode({"types": types_json_string})
         self.uri = f"{base_uri}/sensors/connect?{query_params}"
         self.logger = logging.getLogger(f"{__name__}.MultiSensorClient")
+        self.lock = lock # Store lock reference
+        self.auto_log_state = auto_log_state_ref # Store auto-log state reference
         self.logger.debug(f"Initialized multi-sensor client for URI: {self.uri}")
 
     async def connect_and_receive(self):
@@ -676,6 +650,26 @@ class MultiSensorClient:
                 # Pass the full normalized path instead of just the base name
                 update_inferred_state(normalized_sensor_type, state)
 
+                # --- Automatic Event Logging --- START
+                log_event_automatically = False
+                current_end_time = None
+                with self.lock:
+                    if self.auto_log_state['active']:
+                        current_end_time = self.auto_log_state['end_time']
+                        if current_end_time is None or timestamp < current_end_time:
+                            log_event_automatically = True
+
+                if log_event_automatically:
+                    auto_log_entry = {
+                        "timestamp": timestamp.isoformat(),
+                        "event_type": "auto_log_sensor_update",
+                        "sensor_path": normalized_sensor_type,
+                        "raw_data": data
+                    }
+                    event_data_logger.info(json.dumps(auto_log_entry))
+                    logger.debug(f"Auto-logged sensor update for {normalized_sensor_type}")
+                # --- Automatic Event Logging --- END
+
                 # --- Perform and Update Location Prediction --- START
                 if is_predictive_scan and current_scan_data_for_prediction:
                     # --- Retrieve current pressure --- START
@@ -757,11 +751,13 @@ class MultiSensorClient:
             self.logger.error(f"Error in handle_message (MultiSensor): {e}", exc_info=True)
 
 class GpsClient:
-    def __init__(self, base_uri):
+    def __init__(self, base_uri, lock: threading.Lock, auto_log_state_ref: Dict[str, Any]):
         self.uri = f"{base_uri}/gps"
         self.websocket = None
         self._send_task = None
         self.logger = logging.getLogger(f"{__name__}.GpsClient")
+        self.lock = lock # Store lock reference
+        self.auto_log_state = auto_log_state_ref # Store auto-log state reference
         self.logger.debug(f"Initialized GPS client for URI: {self.uri}")
 
     async def _send_location_requests(self):
@@ -876,8 +872,29 @@ class GpsClient:
                 state.last_timestamp = timestamp
                 # Pass the full normalized path instead of just the base name
                 update_inferred_state(normalized_sensor_type, state)
+
+                # --- Automatic Event Logging --- START
+                log_event_automatically = False
+                current_end_time = None
+                with self.lock:
+                    if self.auto_log_state['active']:
+                        current_end_time = self.auto_log_state['end_time']
+                        if current_end_time is None or timestamp < current_end_time:
+                            log_event_automatically = True
+
+                if log_event_automatically:
+                    auto_log_entry = {
+                        "timestamp": timestamp.isoformat(),
+                        "event_type": "auto_log_sensor_update",
+                        "sensor_path": normalized_sensor_type,
+                        "raw_data": data
+                    }
+                    event_data_logger.info(json.dumps(auto_log_entry))
+                    logger.debug(f"Auto-logged sensor update for {normalized_sensor_type}")
+                # --- Automatic Event Logging --- END
+
             else:
-                 self.logger.warning(f"Could not find/update SensorState node for {grouped_parts}. Final check failed.")
+                self.logger.warning(f"Could not find/update SensorState node for {grouped_parts}. Final check failed.")
 
         except json.JSONDecodeError:
             self.logger.error(f"[GPS] Failed to parse JSON: {message}")
@@ -885,7 +902,7 @@ class GpsClient:
             self.logger.error(f"[GPS] Error in handle_message: {e}", exc_info=True)
 
 # --- Main Sensor Client Execution Logic ---
-async def run_sensor_clients(http_endpoint, ws_base_uri):
+async def run_sensor_clients(http_endpoint, ws_base_uri, lock: threading.Lock, auto_log_state_ref: Dict[str, Any]):
     """Runs the sensor discovery and websocket client tasks."""
     # Logging is now configured by the calling application (e.g., server.py)
     logger.info("--- Starting Sensor Logic Clients ---")
@@ -904,12 +921,14 @@ async def run_sensor_clients(http_endpoint, ws_base_uri):
 
     tasks = []
     if standard_sensor_types:
-        multi_client = MultiSensorClient(base_uri=ws_base_uri, sensor_types=standard_sensor_types)
+        # Pass lock and auto-log state down to the client
+        multi_client = MultiSensorClient(base_uri=ws_base_uri, sensor_types=standard_sensor_types, lock=lock, auto_log_state_ref=auto_log_state_ref)
         tasks.append(asyncio.create_task(multi_client.connect_and_receive(), name="MultiSensorClient"))
     else:
         logger.warning("No standard sensors discovered or an error occurred. Skipping multi-sensor client.")
 
-    gps_client = GpsClient(base_uri=ws_base_uri)
+    # Pass lock and auto-log state down to the client
+    gps_client = GpsClient(base_uri=ws_base_uri, lock=lock, auto_log_state_ref=auto_log_state_ref)
     tasks.append(asyncio.create_task(gps_client.connect_and_receive(), name="GpsClient"))
 
     if not tasks:
