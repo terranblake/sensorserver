@@ -25,6 +25,13 @@ EVENT_DATA_LOG = 'event_data.log'
 CALIBRATION_DATA_FILE = 'location_fingerprints.json'
 # Time window (seconds) around an event to look for network data
 TIME_WINDOW_SECONDS = 10 # Increased slightly from sample
+# Specific time window (seconds) for pressure data
+PRESSURE_TIME_WINDOW_SECONDS = 2
+
+# Define sensor types relevant for calibration
+NETWORK_SENSOR_TYPES = {'android.sensor.wifi_scan', 'android.sensor.network_scan'}
+PRESSURE_SENSOR_TYPE = 'android.sensor.pressure'
+RELEVANT_SENSOR_TYPES = NETWORK_SENSOR_TYPES | {PRESSURE_SENSOR_TYPE}
 
 # --- Logging Setup ---
 log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -162,52 +169,59 @@ def get_annotated_network_events(event_entries):
 
 # --- Matching Raw Data to Events (Adapted from sample) ---
 
-def find_closest_network_data(event_timestamp, raw_entries, time_window_seconds):
+def find_closest_calibration_data(event_timestamp, raw_entries, time_window_seconds):
     """
-    Finds network scan entries in raw_entries that are within a time window
-    of the event_timestamp. Consolidates Wifi and Bluetooth data.
+    Finds relevant sensor entries (network scans, pressure) in raw_entries
+    that are within a time window of the event_timestamp.
+    Consolidates Wifi, Bluetooth, and Pressure data.
     """
-    closest_network_data = []
-    if not event_timestamp: return closest_network_data
+    closest_data = []
+    if not event_timestamp: return closest_data
 
-    window_start = event_timestamp - datetime.timedelta(seconds=time_window_seconds)
-    window_end = event_timestamp + datetime.timedelta(seconds=time_window_seconds)
+    # Calculate windows based on the event timestamp
+    network_window_start = event_timestamp - datetime.timedelta(seconds=TIME_WINDOW_SECONDS)
+    network_window_end = event_timestamp + datetime.timedelta(seconds=TIME_WINDOW_SECONDS)
+    pressure_window_start = event_timestamp - datetime.timedelta(seconds=PRESSURE_TIME_WINDOW_SECONDS)
+    pressure_window_end = event_timestamp + datetime.timedelta(seconds=PRESSURE_TIME_WINDOW_SECONDS)
 
-    # Filter raw entries by time window and sensor type
+    # Filter raw entries by time window and relevant sensor types
     relevant_raw_entries = []
     for entry in raw_entries:
          entry_timestamp_str = entry.get('timestamp')
          entry_sensor_type = entry.get('sensor_type')
          if entry_timestamp_str and entry_sensor_type:
               parsed_entry_ts = parse_timestamp(entry_timestamp_str)
-              if parsed_entry_ts:
-                   is_network_sensor = (
-                        entry_sensor_type == 'android.sensor.wifi_scan' or
-                        entry_sensor_type == 'android.sensor.network_scan'
-                   )
-                   if is_network_sensor and window_start <= parsed_entry_ts <= window_end:
+              if parsed_entry_ts and entry_sensor_type in RELEVANT_SENSOR_TYPES:
+                   # Apply specific window based on sensor type
+                   include_entry = False
+                   if entry_sensor_type in NETWORK_SENSOR_TYPES:
+                        if network_window_start <= parsed_entry_ts <= network_window_end:
+                             include_entry = True
+                   elif entry_sensor_type == PRESSURE_SENSOR_TYPE:
+                        if pressure_window_start <= parsed_entry_ts <= pressure_window_end:
+                             include_entry = True
+
+                   if include_entry:
                         relevant_raw_entries.append(entry)
 
-    logger.debug(f"Found {len(relevant_raw_entries)} raw network entries within window for event at {event_timestamp}")
+    logger.debug(f"Found {len(relevant_raw_entries)} relevant raw sensor entries within respective time windows for event at {event_timestamp}")
 
-    # Extract and consolidate network scan results
+    # Extract and consolidate sensor data
     consolidated_data = []
     for entry in relevant_raw_entries:
         entry_sensor_type = entry['sensor_type']
         raw_data = entry.get('raw_data', {})
-        values = raw_data.get('values') # This can be a list (wifi) or dict (network)
+        values = raw_data.get('values') # This can be a list (wifi, pressure) or dict (network)
 
+        # --- Network Data Extraction ---
         if entry_sensor_type == 'android.sensor.wifi_scan' and isinstance(values, list):
-             # Handle the format where wifi_scan values is a list of results
              consolidated_data.extend([
                  {'type': 'wifi', 'id': res.get('bssid'), 'ssid': res.get('ssid'), 'rssi': res.get('rssi')}
                  for res in values if isinstance(res, dict) and res.get('bssid') and res.get('rssi') is not None
              ])
         elif entry_sensor_type == 'android.sensor.network_scan' and isinstance(values, dict):
-             # Handle the format where network_scan contains wifi and bluetooth results
              wifi_results = values.get('wifiResults', [])
              bluetooth_results = values.get('bluetoothResults', [])
-
              consolidated_data.extend([
                  {'type': 'wifi', 'id': res.get('bssid'), 'ssid': res.get('ssid'), 'rssi': res.get('rssi')}
                  for res in wifi_results if isinstance(res, dict) and res.get('bssid') and res.get('rssi') is not None
@@ -216,101 +230,139 @@ def find_closest_network_data(event_timestamp, raw_entries, time_window_seconds)
                  {'type': 'bluetooth', 'id': res.get('address'), 'name': res.get('name'), 'rssi': res.get('rssi')}
                  for res in bluetooth_results if isinstance(res, dict) and res.get('address') and res.get('rssi') is not None
              ])
+        # --- Pressure Data Extraction ---
+        elif entry_sensor_type == PRESSURE_SENSOR_TYPE and isinstance(values, list) and len(values) > 0:
+             # Pressure usually has one value
+             pressure_value = values[0]
+             if isinstance(pressure_value, (int, float)):
+                  consolidated_data.append({'type': 'pressure', 'id': 'value', 'value': pressure_value})
+             else:
+                  logger.warning(f"Non-numeric pressure value found: {pressure_value} in entry: {entry}")
 
-    # Remove duplicates based on type and ID within this time window's data
-    # Keep the one with the strongest signal (lowest RSSI absolute value / least negative)
-    unique_network_data = {}
+    # --- Remove Duplicates --- #
+    # For network: Keep the one with the strongest signal (highest RSSI)
+    # For pressure: Keep the most recent one (though duplicates are less likely)
+    unique_data = {}
+    # Sort by timestamp primarily to keep latest pressure if duplicates exist
+    # relevant_raw_entries was not sorted, so sort consolidated_data based on original entry time if possible
+    # For simplicity, we'll just overwrite for network and keep first for pressure (or average later)
+    # Let's refine: keep *all* pressure values for stats calculation later.
+
+    final_consolidated_data = []
+    network_duplicates_check = {}
+    pressure_values_temp = []
+
     for item in consolidated_data:
-        if item.get('id') and item.get('rssi') is not None: # Ensure ID and RSSI exist
-            network_key = (item['type'], item['id'])
-            if network_key not in unique_network_data or item['rssi'] > unique_network_data[network_key]['rssi']:
-                unique_network_data[network_key] = item
+        item_type = item.get('type')
+        if item_type in ('wifi', 'bluetooth'):
+            item_id = item.get('id')
+            item_rssi = item.get('rssi')
+            if item_id and item_rssi is not None:
+                network_key = (item_type, item_id)
+                if network_key not in network_duplicates_check or item_rssi > network_duplicates_check[network_key]['rssi']:
+                    network_duplicates_check[network_key] = item
+        elif item_type == 'pressure':
+            # Keep all valid pressure readings for now; will be averaged per location later
+            if item.get('value') is not None:
+                final_consolidated_data.append(item) # Add pressure directly
 
-    closest_network_data = list(unique_network_data.values())
-    logger.debug(f"Consolidated to {len(closest_network_data)} unique network devices for event at {event_timestamp}")
-    return closest_network_data
+    # Add the unique network entries
+    final_consolidated_data.extend(list(network_duplicates_check.values()))
+
+    logger.debug(f"Consolidated to {len(final_consolidated_data)} unique sensor readings for event at {event_timestamp}")
+    return final_consolidated_data
 
 
 # --- Building Location Fingerprints (Adapted from sample) ---
 
 def build_location_fingerprints(annotated_network_events, raw_entries, time_window_seconds):
     """
-    Builds a fingerprint for each location based on the median RSSI
-    and standard deviation of networks found during annotated events.
+    Builds a fingerprint for each location based on the median and
+    standard deviation of sensor readings (Network RSSI, Pressure)
+    found during annotated events.
     """
-    logger.info("Building location fingerprints...")
-    location_network_data = {} # {location: { (type, id): [rssi1, rssi2, ...], ... }, ...}
+    logger.info("Building location fingerprints (including pressure)...")
+    location_data = {} # {location: { (type, id_or_metric): [value1, value2, ...], ... }, ...}
 
     for i, event in enumerate(annotated_network_events):
         location = event['location']
         event_timestamp = event['timestamp']
         logger.debug(f"Processing event {i+1}/{len(annotated_network_events)}: Loc='{location}', Time={event_timestamp}")
 
-        # Find network data around the event timestamp
-        network_data_around_event = find_closest_network_data(event_timestamp, raw_entries, time_window_seconds)
+        # Find sensor data around the event timestamp
+        data_around_event = find_closest_calibration_data(event_timestamp, raw_entries, time_window_seconds)
 
-        if not network_data_around_event:
-            logger.warning(f"No network data found near event at {event_timestamp} for location '{location}'")
+        if not data_around_event:
+            logger.warning(f"No relevant sensor data found near event at {event_timestamp} for location '{location}'")
             continue
 
-        if location not in location_network_data:
-            location_network_data[location] = {}
+        if location not in location_data:
+            location_data[location] = {}
 
-        for network in network_data_around_event:
-            # Ensure network ID is treated as string for consistency
-            network_id_str = str(network.get('id'))
-            if not network_id_str: continue # Skip if ID is missing
+        for reading in data_around_event:
+            reading_type = reading.get('type')
+            reading_id = str(reading.get('id')) # Ensure ID is string (will be 'value' for pressure)
+            value = None
 
-            network_key = (network['type'], network_id_str)
-            rssi_value = network.get('rssi')
-            if rssi_value is None: continue # Skip if RSSI is missing
+            if reading_type in ('wifi', 'bluetooth'):
+                value = reading.get('rssi')
+                data_key = (reading_type, reading_id)
+            elif reading_type == 'pressure':
+                value = reading.get('value')
+                data_key = (reading_type, reading_id) # Key will be ('pressure', 'value')
+            else:
+                continue # Skip unknown types
 
-            if network_key not in location_network_data[location]:
-                location_network_data[location][network_key] = []
-            location_network_data[location][network_key].append(rssi_value)
+            if value is None:
+                 logger.warning(f"Missing value for {reading_type} / {reading_id} in event {i+1}")
+                 continue
 
-    # Calculate median and standard deviation RSSI for each network at each location
-    location_fingerprints = {} # {location: { (type, id): {'median_rssi': ..., 'std_dev_rssi': ...}, ... }, ...}
-    logger.info("Calculating fingerprint statistics (median, std dev)...")
-    for location, network_data in location_network_data.items():
+            if data_key not in location_data[location]:
+                location_data[location][data_key] = []
+            location_data[location][data_key].append(value)
+
+    # Calculate median and standard deviation for each reading type at each location
+    location_fingerprints = {} # {location: { (type, id): {'median': ..., 'std_dev': ...}, ... }, ...}
+    logger.info("Calculating fingerprint statistics (median, std dev) for network and pressure...")
+    for location, collected_data in location_data.items():
         location_fingerprints[location] = {}
-        logger.debug(f"Calculating stats for location: '{location}' ({len(network_data)} networks)")
-        for network_key, rssi_values in network_data.items():
-            if len(rssi_values) > 0:
-                try:
-                    median_rssi = statistics.median(rssi_values)
-                    # Calculate standard deviation, handle case with only one data point
-                    std_dev_rssi = 0.0
-                    if len(rssi_values) > 1:
-                         # Ensure all values are numbers before calculating stdev
-                         if all(isinstance(x, (int, float)) for x in rssi_values):
-                              std_dev_rssi = statistics.stdev(rssi_values)
-                         else:
-                              logger.warning(f"Non-numeric RSSI value found for {network_key} at {location}, cannot calculate std dev. Values: {rssi_values}")
-                    elif len(rssi_values) == 1 and not isinstance(rssi_values[0], (int, float)):
-                         logger.warning(f"Single non-numeric RSSI value found for {network_key} at {location}. Value: {rssi_values[0]}")
-                         median_rssi = None # Cannot use non-numeric median
+        logger.debug(f"Calculating stats for location: '{location}' ({len(collected_data)} sensor keys)")
+        for data_key, values in collected_data.items():
+            sensor_type, sensor_id = data_key # Unpack the key
+            metric_name = "RSSI" if sensor_type in ('wifi', 'bluetooth') else "Pressure"
 
-                    if median_rssi is not None:
-                        location_fingerprints[location][network_key] = {
-                            'median_rssi': median_rssi,
-                            'std_dev_rssi': std_dev_rssi,
-                            'num_samples': len(rssi_values) # Add sample count for info
-                        }
-                        logger.debug(f"  Network {network_key}: Median={median_rssi:.2f}, StdDev={std_dev_rssi:.2f}, Samples={len(rssi_values)}")
-                    else:
-                         logger.warning(f"  Skipping Network {network_key} due to non-numeric median.")
+            if len(values) > 0:
+                try:
+                    # Ensure all values are numeric
+                    numeric_values = [v for v in values if isinstance(v, (int, float))]
+                    if len(numeric_values) != len(values):
+                        logger.warning(f"Non-numeric values found for {data_key} at {location}. Original: {len(values)}, Numeric: {len(numeric_values)}. Using only numeric.")
+                    if not numeric_values:
+                        logger.warning(f"No numeric values left for {data_key} at {location}. Skipping stats.")
+                        continue
+
+                    median_val = statistics.median(numeric_values)
+                    std_dev_val = 0.0
+                    if len(numeric_values) > 1:
+                         std_dev_val = statistics.stdev(numeric_values)
+
+                    location_fingerprints[location][data_key] = {
+                        'median': median_val,
+                        'std_dev': std_dev_val,
+                        'num_samples': len(numeric_values) # Use count of numeric samples
+                    }
+                    logger.debug(f"  Sensor {data_key}: Median {metric_name}={median_val:.2f}, StdDev={std_dev_val:.2f}, Samples={len(numeric_values)}")
 
                 except statistics.StatisticsError as e:
-                     logger.error(f"Statistics error for {network_key} at {location}: {e}. Values: {rssi_values}")
+                     logger.error(f"Statistics error for {data_key} at {location}: {e}. Values: {numeric_values}")
                 except Exception as e:
-                     logger.error(f"Unexpected error calculating stats for {network_key} at {location}: {e}. Values: {rssi_values}")
+                     logger.error(f"Unexpected error calculating stats for {data_key} at {location}: {e}. Values: {numeric_values}")
             else:
-                 logger.warning(f"  Network {network_key}: No RSSI values collected.")
+                 logger.warning(f"  Sensor {data_key}: No values collected.")
 
     # Log summary of generated fingerprints
     for loc, nets in location_fingerprints.items():
-        logger.info(f"Generated fingerprint for '{loc}' with {len(nets)} networks.")
+        logger.info(f"Generated fingerprint for '{loc}' with {len(nets)} sensor metrics.")
 
     return location_fingerprints
 
@@ -319,12 +371,18 @@ def save_fingerprints(fingerprints, filename):
     logger.info(f"Saving fingerprints to {filename}...")
     # Convert tuple keys to strings for JSON serialization
     serializable_fingerprints = {}
-    for location, networks in fingerprints.items():
+    for location, sensors_data in fingerprints.items():
         serializable_fingerprints[location] = {}
-        for (ntype, nid), data in networks.items():
-             # Use a consistent string key format, ensuring nid is string
-             key_str = f"{ntype}_{str(nid)}"
-             serializable_fingerprints[location][key_str] = data
+        for (stype, sid_or_metric), data in sensors_data.items():
+             # Use a consistent string key format, ensuring id/metric is string
+             key_str = f"{stype}_{str(sid_or_metric)}"
+             # Rename keys slightly for clarity in JSON output
+             output_data = {
+                 'median_value': data.get('median'),
+                 'std_dev_value': data.get('std_dev'),
+                 'num_samples': data.get('num_samples')
+             }
+             serializable_fingerprints[location][key_str] = output_data
 
     try:
         with open(filename, 'w') as f:
