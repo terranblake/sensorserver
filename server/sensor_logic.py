@@ -194,105 +194,127 @@ def load_fingerprints(filename):
         location_fingerprints = {} # Ensure it's empty
         return False
 
-def calculate_similarity(current_network_data, location_fingerprint, missing_penalty_factor=1.0, extra_penalty_factor=0.5):
+# Maximum age (seconds) for a pressure reading to be considered current for prediction
+MAX_PRESSURE_AGE_SECONDS = 5
+
+def calculate_similarity(current_network_data, current_pressure_value, location_fingerprint, network_weight=1.0, pressure_weight=5.0):
     """
-    Calculates a similarity score between current network data and a location fingerprint.
-    Lower score means higher similarity (like a distance metric).
-    Uses standard deviation to weight the difference penalty.
+    Calculates a similarity score between current sensor data (network + pressure)
+    and a location fingerprint. Lower score is better.
+    Pressure component is weighted higher.
     """
-    score = 0.0
-    # Convert current data to a dictionary for quick lookup: {(type, id): rssi}
+    network_score = 0.0
+    pressure_score = 0.0
+    # --- Network Score Calculation (similar to before, but scaled by network_weight) ---
+    # Convert current network data to a dictionary for quick lookup: {(type, id): rssi}
     current_networks = {}
     for net in current_network_data:
-        # Ensure type, id, and rssi are present and valid
         net_type = net.get('type')
-        net_id = str(net.get('id')) # Ensure ID is string
+        net_id = str(net.get('id'))
         net_rssi = net.get('rssi')
         if net_type and net_id and isinstance(net_rssi, (int, float)):
             current_networks[(net_type, net_id)] = net_rssi
+
+    # Separate fingerprint into network and pressure parts
+    fingerprint_networks = {k: v for k, v in location_fingerprint.items() if k[0] in ('wifi', 'bluetooth')}
+    fingerprint_pressure_data = location_fingerprint.get(('pressure', 'value')) # Get pressure specific data
+
+    # Network comparison
+    matched_net_keys = 0
+    missing_net_penalty = 0
+    extra_net_penalty = 0
+
+    if not fingerprint_networks:
+        # High penalty if fingerprint has no networks but we see some
+        missing_net_penalty = len(current_networks) * abs(-75) # Avg RSSI penalty per extra
+    else:
+        for network_key, fingerprint_data in fingerprint_networks.items():
+            median_rssi = fingerprint_data.get('median_rssi', -999)
+            std_dev_rssi = fingerprint_data.get('std_dev_rssi', 100)
+            if network_key in current_networks:
+                matched_net_keys += 1
+                current_rssi = current_networks[network_key]
+                diff = abs(current_rssi - median_rssi)
+                weighted_diff = diff / (max(std_dev_rssi, 0.1) + 1e-6)
+                network_score += weighted_diff ** 2
+            else:
+                base_penalty = max(0, 100 + median_rssi)
+                stability_factor = 1 / (max(std_dev_rssi, 0.1) + 1e-6)
+                penalty = (base_penalty * stability_factor) ** 1.5
+                missing_net_penalty += penalty
+
+        for network_key, current_rssi in current_networks.items():
+            if network_key not in fingerprint_networks:
+                base_penalty = max(0, 100 + current_rssi)
+                extra_net_penalty += base_penalty
+
+    # Combine network scores, applying overall weight
+    network_score = (network_score + missing_net_penalty + extra_net_penalty) * network_weight
+    logger.debug(f"  Network Score Component (Weighted): {network_score:.2f}")
+
+    # --- Pressure Score Calculation (weighted by pressure_weight) ---
+    pressure_diff_score = 0
+    missing_pressure_penalty = 0
+    extra_pressure_penalty = 0
+
+    if fingerprint_pressure_data:
+        median_pressure = fingerprint_pressure_data.get('median_rssi', 1013.25) # Default to standard pressure
+        std_dev_pressure = fingerprint_pressure_data.get('std_dev_rssi', 5.0) # Default std dev
+        if current_pressure_value is not None and isinstance(current_pressure_value, (int, float)):
+             # Pressure difference score (lower std dev = higher weight)
+             # Pressure has much smaller range than RSSI, adjust weighting
+             pressure_diff = abs(current_pressure_value - median_rssi)
+             # Normalize by std dev, ensure minimum divisor
+             weighted_pressure_diff = pressure_diff / (max(std_dev_pressure, 0.01) + 1e-6) # Smaller min divisor for pressure
+             pressure_diff_score += weighted_pressure_diff ** 2 # Squared difference
+             logger.debug(f"  Pressure Match: Current={current_pressure_value:.2f}, Fingerprint={median_pressure:.2f}, StdDev={std_dev_pressure:.2f}, WeightedDiff^2={weighted_pressure_diff**2:.2f}")
         else:
-            logger.debug(f"Skipping invalid network data item in similarity calc: {net}")
+            # Penalty for missing current pressure when fingerprint expects it
+            # Penalty could be based on how stable the pressure usually is
+            stability_factor = 1 / (max(std_dev_pressure, 0.01) + 1e-6)
+            missing_pressure_penalty += (1.0 * stability_factor) ** 2 # Base penalty of 1 hPa, scaled by stability squared
+            logger.debug(f"  Missing Current Pressure: Expected={median_pressure:.2f}, StdDev={std_dev_pressure:.2f}, Penalty={missing_pressure_penalty:.2f}")
+    elif current_pressure_value is not None and isinstance(current_pressure_value, (int, float)):
+        # Penalty for having current pressure when fingerprint doesn't expect it
+        # Base penalty, maybe constant or related to deviation from standard pressure
+        extra_pressure_penalty += 1.0**2 # Simple base penalty
+        logger.debug(f"  Extra Current Pressure: Value={current_pressure_value:.2f}, Penalty={extra_pressure_penalty:.2f}")
 
-    fingerprint_networks = location_fingerprint # This should already be {(type, id): {median_rssi: ..., std_dev_rssi: ...}}
+    # Combine pressure scores, applying overall weight
+    pressure_score = (pressure_diff_score + missing_pressure_penalty + extra_pressure_penalty) * pressure_weight
+    logger.debug(f"  Pressure Score Component (Weighted): {pressure_score:.2f}")
 
-    if not fingerprint_networks: # Handle empty fingerprint
-        # If fingerprint is empty, score is high if current networks exist, low otherwise
-        return len(current_networks) * abs(extra_penalty_factor * -75) # Penalty per extra network (avg RSSI)
+    # --- Total Score ---
+    total_score = network_score + pressure_score
+    logger.debug(f"  Combined Score: {total_score:.2f} (Network: {network_score:.2f}, Pressure: {pressure_score:.2f})")
 
-    # Compare networks present in both
-    matched_keys = 0
-    for network_key, fingerprint_data in fingerprint_networks.items():
-        # Safely access median and std_dev, providing defaults if missing
-        best_fit_rssi = fingerprint_data.get('median_rssi', -999)
-        std_dev_rssi = fingerprint_data.get('std_dev_rssi', 100)
+    # Return total score - lower is better
+    return total_score
 
-        if network_key in current_networks:
-            matched_keys += 1
-            current_rssi = current_networks[network_key]
-            # Calculate difference. Normalize by std dev if std dev > 0
-            diff = abs(current_rssi - best_fit_rssi)
-            # Weight the difference penalty inversely by stability (lower std dev = higher weight)
-            # Add a small epsilon to avoid division by zero and reduce impact of tiny std dev
-            weighted_diff = diff / (max(std_dev_rssi, 0.1) + 1e-6) # Use max(std_dev, 0.1) to avoid overly sensitive weighting
-            score += weighted_diff ** 2 # Use squared weighted difference
-            logger.debug(f"  Match {network_key}: Current={current_rssi}, Fingerprint={best_fit_rssi:.1f}, StdDev={std_dev_rssi:.1f}, WeightedDiff^2={weighted_diff**2:.2f}")
-        else:
-            # Penalty for networks expected at this location but not currently visible
-            # A strong, stable expected signal that's missing is a higher penalty
-            # Penalty increases as median_rssi is stronger (less negative)
-            # Penalty increases as std_dev_rssi is lower (more stable)
-            # Example: base penalty on median, scaled by inverse std dev
-            base_penalty = max(0, 100 + best_fit_rssi) # Scale strength (e.g., -30dBm -> 70, -90dBm -> 10)
-            stability_factor = 1 / (max(std_dev_rssi, 0.1) + 1e-6)
-            penalty = (base_penalty * stability_factor) ** 1.5 # Apply power to emphasize
-            score += penalty * missing_penalty_factor
-            logger.debug(f"  Missing {network_key}: Fingerprint={best_fit_rssi:.1f}, StdDev={std_dev_rssi:.1f}, Penalty={penalty * missing_penalty_factor:.2f}")
-
-    # Penalty for networks currently visible but not in the location's fingerprint
-    extra_keys = 0
-    for network_key, current_rssi in current_networks.items():
-        if network_key not in fingerprint_networks:
-            extra_keys += 1
-            # Penalty for unexpected networks. Base penalty on signal strength.
-            base_penalty = max(0, 100 + current_rssi)
-            score += base_penalty * extra_penalty_factor
-            logger.debug(f"  Extra {network_key}: Current={current_rssi}, Penalty={base_penalty * extra_penalty_factor:.2f}")
-
-    # Optional: Normalization - reduce score if many networks matched well?
-    # Or increase score if fingerprint has many networks but few were matched/extra?
-    # Example: Normalize by total number of networks considered (fingerprint + extras)
-    num_fingerprint_nets = len(fingerprint_networks)
-    total_considered = num_fingerprint_nets + extra_keys
-    if total_considered > 0:
-        # Lower score slightly if the ratio of matched keys is high
-        match_ratio = matched_keys / num_fingerprint_nets if num_fingerprint_nets > 0 else 0
-        # score *= (1.0 - (match_ratio * 0.1)) # Mild adjustment based on match ratio
-        pass # Keep normalization simple for now
-
-    logger.debug(f"  Final Score: {score:.2f} (Matched: {matched_keys}, Missing: {num_fingerprint_nets-matched_keys}, Extra: {extra_keys})")
-    return score
-
-def predict_location(current_network_data):
+def predict_location(current_network_data, current_pressure_value=None):
     """
-    Predicts the current location based on network data and loaded location fingerprints.
+    Predicts the current location based on network data, optional pressure data,
+    and loaded location fingerprints.
     Returns the name of the best matching location or None.
     """
     if not location_fingerprints:
         logger.debug("Prediction skipped: No location fingerprints loaded.")
         return None # No fingerprints loaded
 
+    # Prediction requires network data
     if not current_network_data:
         logger.debug("Prediction skipped: No current network data provided.")
-        return None # Cannot predict without current data
+        return None
 
     best_match_location = None
     min_score = float('inf')
     scores = {}
 
-    logger.debug(f"Predicting location based on {len(current_network_data)} current networks...")
+    logger.debug(f"Predicting location based on {len(current_network_data)} current networks and pressure {current_pressure_value:.2f} hPa" if current_pressure_value else f"Predicting location based on {len(current_network_data)} current networks (no current pressure)")
     for location, fingerprint in location_fingerprints.items():
         logger.debug(f"Calculating score for location: '{location}'")
-        score = calculate_similarity(current_network_data, fingerprint)
+        # Pass network data and current pressure value to the updated similarity function
+        score = calculate_similarity(current_network_data, current_pressure_value, fingerprint)
         scores[location] = score
         logger.info(f"Location '{location}' score: {score:.2f}")
 
@@ -626,23 +648,72 @@ class MultiSensorClient:
 
                 # --- Perform and Update Location Prediction --- START
                 if is_predictive_scan and current_scan_data_for_prediction:
-                    predicted_loc = predict_location(current_scan_data_for_prediction)
+                    # --- Retrieve current pressure --- START
+                    current_pressure = None
+                    current_pressure_timestamp = None
+                    try:
+                        # Access the pressure state directly from the global structure
+                        pressure_state = nested_sensor_data.get('environment', {}).get('pressure')
+                        if isinstance(pressure_state, SensorState):
+                            # Check if last_value exists and is a list/tuple with at least one element
+                            if pressure_state.last_value and isinstance(pressure_state.last_value, (list, tuple)) and len(pressure_state.last_value) > 0:
+                                raw_pressure = pressure_state.last_value[0]
+                                if isinstance(raw_pressure, (int, float)):
+                                     current_pressure = raw_pressure
+                                     current_pressure_timestamp = pressure_state.last_timestamp
+                                else:
+                                    logger.debug("Current pressure value in state is not numeric")
+                            else:
+                                logger.debug("Current pressure state has no valid last_value list/tuple")
+                        else:
+                            logger.debug("Pressure state node is not a SensorState object")
+                    except KeyError:
+                        logger.debug("Pressure sensor state path not found in nested_sensor_data ('environment.pressure')")
+                    except Exception as e:
+                        logger.error(f"Error retrieving current pressure state: {e}", exc_info=True)
+
+                    # Check pressure age
+                    pressure_value_to_use = None
+                    if current_pressure is not None and current_pressure_timestamp is not None:
+                         now = datetime.now()
+                         if isinstance(current_pressure_timestamp, datetime):
+                             pressure_age = now - current_pressure_timestamp
+                             if pressure_age.total_seconds() <= MAX_PRESSURE_AGE_SECONDS:
+                                 pressure_value_to_use = current_pressure
+                                 logger.debug(f"Using current pressure {pressure_value_to_use:.2f} hPa (Age: {pressure_age.total_seconds():.1f}s)")
+                             else:
+                                 logger.debug(f"Stale pressure reading (Age: {pressure_age.total_seconds():.1f}s > {MAX_PRESSURE_AGE_SECONDS}s). Not using for prediction.")
+                         else:
+                             logger.warning("Pressure timestamp is not a datetime object.")
+                    else:
+                        logger.debug("No current pressure value or timestamp available for age check.")
+                    # --- Retrieve current pressure --- END
+
+                    # --- Call prediction with pressure --- START
+                    predicted_loc = predict_location(current_scan_data_for_prediction, pressure_value_to_use)
+                    # --- Call prediction with pressure --- END
+
                     # Find the location.predicted state node
                     loc_node = nested_sensor_data.get('location', {}).get('predicted')
                     if isinstance(loc_node, SensorState):
                          loc_node.previous_value = loc_node.last_value
                          loc_node.previous_timestamp = loc_node.last_timestamp
-                         loc_node.last_value = predicted_loc if predicted_loc else "Unknown"
+                         # Store the prediction result
+                         new_loc_state_value = predicted_loc if predicted_loc else "Unknown"
+                         loc_node.last_value = new_loc_state_value
                          loc_node.last_timestamp = timestamp
-                         loc_node.inferred_state = predicted_loc if predicted_loc else "Unknown"
-                         # Log state change for location
-                         log_entry = {
-                             "timestamp": timestamp.isoformat(),
-                             "sensor_path": "location.predicted",
-                             "previous_state": loc_node.previous_value if loc_node.previous_value else "Unknown",
-                             "new_state": loc_node.last_value
-                         }
-                         state_data_logger.info(json.dumps(log_entry))
+                         loc_node.inferred_state = new_loc_state_value # Use the same for inferred state
+                         # Log state change for location prediction
+                         # Avoid logging if state hasn't actually changed
+                         prev_loc_state_value = loc_node.previous_value if loc_node.previous_value else "Unknown"
+                         if prev_loc_state_value != new_loc_state_value:
+                             log_entry = {
+                                 "timestamp": timestamp.isoformat(),
+                                 "sensor_path": "location.predicted",
+                                 "previous_state": prev_loc_state_value,
+                                 "new_state": new_loc_state_value
+                             }
+                             state_data_logger.info(json.dumps(log_entry))
                     else:
                         logger.warning("Could not find location.predicted SensorState node to update.")
                 # --- Perform and Update Location Prediction --- END
