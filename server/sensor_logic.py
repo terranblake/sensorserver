@@ -51,6 +51,8 @@ raw_data_logger.propagate = False # Prevent duplication if root logger is config
 # Specific logger for state changes - will be configured by the main application
 state_data_logger = logging.getLogger("state_data")
 state_data_logger.propagate = False
+# Specific logger for event data - configured by server.py, just get it here
+event_data_logger = logging.getLogger("event_data")
 
 # --- Shared State ---
 # Use a standard dict for nested structure
