@@ -35,6 +35,11 @@ LIGHT_DARK_THRESHOLD = 10
 LIGHT_DIM_THRESHOLD = 100
 PROXIMITY_NEAR_THRESHOLD = 4.0 # Assume values < threshold are NEAR (specific to device)
 
+# Basic confidence check: score needs to be below a threshold, or significantly better than the next best
+    # This requires tuning based on observed scores
+CONFIDENCE_THRESHOLD = 500 # Example threshold - NEEDS TUNING
+SIGNIFICANT_DIFFERENCE = 1.5 # Example: Best score must be 1.5x lower than second best
+
 # --- Logging Setup (Module Specific) ---
 # Basic logger for this module
 logger = logging.getLogger(__name__)
@@ -321,11 +326,6 @@ def predict_location(current_network_data, current_pressure_value=None):
         if score < min_score:
             min_score = score
             best_match_location = location
-
-    # Basic confidence check: score needs to be below a threshold, or significantly better than the next best
-    # This requires tuning based on observed scores
-    CONFIDENCE_THRESHOLD = 500 # Example threshold - NEEDS TUNING
-    SIGNIFICANT_DIFFERENCE = 1.5 # Example: Best score must be 1.5x lower than second best
 
     if best_match_location and min_score < CONFIDENCE_THRESHOLD:
         sorted_scores = sorted(scores.items(), key=lambda item: item[1])
