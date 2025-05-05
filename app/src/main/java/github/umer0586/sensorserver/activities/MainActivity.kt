@@ -27,7 +27,9 @@ import github.umer0586.sensorserver.service.HttpServerStateListener
 import github.umer0586.sensorserver.service.HttpService
 import github.umer0586.sensorserver.service.ServiceBindHelper
 import github.umer0586.sensorserver.service.WebsocketService
+import github.umer0586.sensorserver.setting.AppSettings
 import github.umer0586.sensorserver.webserver.HttpServerInfo
+import github.umer0586.sensorserver.websocketserver.SensorWebSocketServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.lang.Exception
@@ -44,6 +46,8 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
 
     private lateinit var binding : ActivityMainBinding
 
+    private lateinit var appSettings: AppSettings
+
     companion object
     {
         private val TAG: String = MainActivity::class.java.simpleName
@@ -56,8 +60,52 @@ class MainActivity : AppCompatActivity(), NavigationBarView.OnItemSelectedListen
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Set a Toolbar to replace the ActionBar.
+        // Use getRoot() to get the actual Toolbar instance
         setSupportActionBar(binding.toolbar.root)
+
+        appSettings = AppSettings(applicationContext)
+        
+        // Check for orphaned servers and clean them up before starting new ones
+        Log.i(TAG, "Checking for orphaned servers to clean up...")
+        val portsToClean = listOf(appSettings.getWebsocketPortNo(), appSettings.getHttpPortNo())
+        
+        Thread {
+            try {
+                // Clean up WebSocket ports
+                SensorWebSocketServer.cleanupOrphanedServers(portsToClean)
+                
+                // Also clean up HTTP ports separately 
+                for (port in portsToClean) {
+                    try {
+                        // Try to forcefully free the HTTP port
+                        val socket = java.net.ServerSocket()
+                        socket.reuseAddress = true
+                        try {
+                            socket.bind(java.net.InetSocketAddress(port))
+                            Log.i(TAG, "HTTP port $port is available")
+                            socket.close()
+                        } catch (e: java.io.IOException) {
+                            Log.w(TAG, "HTTP port $port is in use, attempting to release...")
+                            // Create a temporary client connection to reset the port
+                            try {
+                                val clientSocket = java.net.Socket()
+                                clientSocket.connect(java.net.InetSocketAddress("localhost", port), 100)
+                                clientSocket.close()
+                                Log.i(TAG, "Attempted to reset port $port")
+                                Thread.sleep(500) // Give OS time to actually release the port
+                            } catch (e2: Exception) {
+                                Log.e(TAG, "Failed to reset port $port: ${e2.message}")
+                            }
+                            socket.close()
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error checking/cleaning port $port: ${e.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error during server cleanup: ${e.message}")
+            }
+        }.start()
 
         // Passing each menu ID as a set of Ids because each
         // menu should be considered as top level destinations.

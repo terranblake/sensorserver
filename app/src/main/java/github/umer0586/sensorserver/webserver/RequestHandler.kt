@@ -53,6 +53,18 @@ class RequestController {
             "type" to NetworkSensorManager.TYPE_NETWORK_SCAN
         ))
 
+        // Add GPS sensor
+        sensorsList.add(mutableMapOf(
+            "name" to "GPS Location",
+            "type" to "gps"
+        ))
+        
+        // Add touchscreen sensor
+        sensorsList.add(mutableMapOf(
+            "name" to "Touchscreen",
+            "type" to "touchscreen"
+        ))
+
         return JsonUtil.toJSON(sensorsList)
     }
 

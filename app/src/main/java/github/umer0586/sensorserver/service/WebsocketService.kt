@@ -141,6 +141,64 @@ class WebsocketService : Service()
 
     }
 
+    private fun forceReleasePort(port: Int): Boolean {
+        Log.i(TAG, "Attempting to forcefully release port $port")
+        try {
+            // Create a server socket on the same port with reuse address option
+            val serverSocket = java.net.ServerSocket()
+            serverSocket.reuseAddress = true
+            serverSocket.bind(InetSocketAddress(port))
+            Log.i(TAG, "Successfully bound to port $port after enabling reuseAddress")
+            serverSocket.close()
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to forcefully release port $port, will attempt reset", e)
+            // Try a different approach - create a temporary connection to the port to reset it
+            try {
+                val socket = java.net.Socket()
+                socket.reuseAddress = true
+                socket.soTimeout = 1000 // 1 second timeout
+                socket.connect(InetSocketAddress("localhost", port), 1000)
+                socket.close()
+                Log.i(TAG, "Successfully connected to port $port to trigger reset")
+                // Wait briefly for the OS to release the connection
+                Thread.sleep(500)
+                return true
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to connect to port $port for reset", e2)
+                // If nothing else works, we'll try a fallback with process scanning (requires root)
+                return false
+            }
+        }
+    }
+
+    private fun ensurePortAvailable(ipAddress: String, port: Int): Boolean {
+        try {
+            // First try a simple check to see if the port is available
+            val serverSocket = java.net.ServerSocket(port, 1, java.net.InetAddress.getByName(ipAddress))
+            serverSocket.close()
+            Log.d(TAG, "Port $port is available")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Port $port is already in use or unavailable", e)
+            
+            // If port is in use, try to forcefully release it
+            if (forceReleasePort(port)) {
+                Log.i(TAG, "Successfully released port $port, retrying connection")
+                try {
+                    val serverSocket = java.net.ServerSocket(port, 1, java.net.InetAddress.getByName(ipAddress))
+                    serverSocket.close()
+                    Log.d(TAG, "Port $port is now available after force release")
+                    return true
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Port $port is still unavailable after force release", e2)
+                }
+            }
+            
+            return false
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int
     {
         Log.d(TAG, "onStartCommand()")
@@ -153,7 +211,6 @@ class WebsocketService : Service()
             appSettings.isAllInterfaceOptionEnabled() -> "0.0.0.0"
             appSettings.isHotspotOptionEnabled() -> wifiManager.getHotspotIp() // could be null
             else -> wifiManager.getIp() // could be null
-
         }
 
         if(ipAddress == null)
@@ -166,9 +223,21 @@ class WebsocketService : Service()
             return START_NOT_STICKY
         }
 
+        val port = appSettings.getWebsocketPortNo()
+        
+        // Check if port is available before starting server
+        if (!ensurePortAvailable(ipAddress, port)) {
+            // Port is in use, notify listener
+            serverStateListener?.onServerError(Exception("Port $port is already in use and could not be released"))
+            stopForeground()
+            return START_NOT_STICKY  
+        }
+
+        // When creating the WebSocketServer, enable address reuse
+        val inetSocketAddress = InetSocketAddress(ipAddress, port)
         sensorWebSocketServer = SensorWebSocketServer(
             applicationContext,
-            InetSocketAddress(ipAddress, appSettings.getWebsocketPortNo())
+            inetSocketAddress
         )
 
         sensorWebSocketServer?.onStart { serverInfo ->
@@ -346,7 +415,17 @@ class WebsocketService : Service()
 
     fun sendMotionEvent(motionEvent : MotionEvent)
     {
-        sensorWebSocketServer?.onMotionEvent(motionEvent)
+        Log.d(TAG, "===> WebsocketService.sendMotionEvent called: action=${motionEvent.action}, x=${motionEvent.x}, y=${motionEvent.y}")
+        try {
+            if (sensorWebSocketServer?.isRunning == true) {
+                Log.d(TAG, "===> WebSocket server is running, forwarding motion event")
+                sensorWebSocketServer?.onMotionEvent(motionEvent)
+            } else {
+                Log.w(TAG, "===> Cannot send motion event: WebSocket server is not running")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "===> Error forwarding motion event to WebSocket server: ${e.message}", e)
+        }
     }
 
     fun sendNetworkScanData(networkData: NetworkScanData) {

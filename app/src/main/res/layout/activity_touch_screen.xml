@@ -5,9 +5,20 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/touch_screen_background"
-
+    android:clickable="true"
+    android:focusable="true"
     tools:context=".activities.TouchScreenActivity">
 
-
+    <TextView
+        android:id="@+id/touchFeedbackText"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:text="Touch anywhere on screen"
+        android:textColor="#FFFFFF"
+        android:textSize="24sp"
+        android:clickable="true"
+        android:focusable="true"
+        android:background="?attr/selectableItemBackground" />
 
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

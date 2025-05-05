@@ -50,6 +50,12 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     private var handlerThread: HandlerThread = HandlerThread("Handler Thread")
     private lateinit var handler: Handler
     private lateinit var motionEventHandler : Handler
+    
+    // Handlers for location updates
+    private lateinit var locationUpdateHandler: Handler
+    private var locationUpdateRunnable: Runnable? = null
+    private val LOCATION_UPDATE_INTERVAL_MS = 500L // 500ms interval
+
     private val gson = Gson()
 
     private val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -98,9 +104,9 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         private const val CONNECTION_PATH_GPS = "/gps"
         private const val CONNECTION_PATH_TOUCH_SENSORS = "/touchscreen"
         // Network sensor paths
-    private const val CONNECTION_PATH_WIFI_SCAN = "/sensor/connect?type=android.sensor.wifi_scan"
-    private const val CONNECTION_PATH_BLUETOOTH_SCAN = "/sensor/connect?type=android.sensor.bluetooth_scan"
-    private const val CONNECTION_PATH_NETWORK_SCAN = "/sensor/connect?type=android.sensor.network_scan"
+        private const val CONNECTION_PATH_WIFI_SCAN = "/sensor/connect?type=android.sensor.wifi_scan"
+        private const val CONNECTION_PATH_BLUETOOTH_SCAN = "/sensor/connect?type=android.sensor.bluetooth_scan"
+        private const val CONNECTION_PATH_NETWORK_SCAN = "/sensor/connect?type=android.sensor.network_scan"
         private val message = mutableMapOf<String,Any>()
 
         //websocket close codes ranging 4000 - 4999 are for application's custom messages
@@ -113,7 +119,51 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         const val CLOSE_CODE_TOO_FEW_SENSORS = 4007
         const val CLOSE_CODE_NO_SENSOR_SPECIFIED = 4008
         const val CLOSE_CODE_PERMISSION_DENIED = 4009
+        
+        // Function to clean up orphaned servers from previous app instances
+        fun cleanupOrphanedServers(ports: List<Int>) {
+            Thread {
+                try {
+                    for (port in ports) {
+                        try {
+                            // Try to create a server socket on the port to see if it's in use
+                            val serverSocket = java.net.ServerSocket(port)
+                            // If we get here, the port is available, close our test socket
+                            serverSocket.close()
+                            Log.i(TAG, "Port $port is available, no cleanup needed")
+                        } catch (e: java.io.IOException) {
+                            // Port is in use, attempt to force close it
+                            Log.w(TAG, "Port $port appears to be in use. Attempting to force close...")
+                            try {
+                                // Create a socket connection to the port to reset it
+                                val socket = java.net.Socket()
+                                socket.connect(java.net.InetSocketAddress("localhost", port), 100)
+                                socket.close()
+                                
+                                // Additional android-specific process cleanup
+                                val runtime = Runtime.getRuntime()
+                                runtime.exec("kill -9 $(lsof -t -i:$port)")
+                                
+                                Log.i(TAG, "Attempted to force close port $port")
+                                
+                                // Give the system a moment to release the port
+                                Thread.sleep(500)
+                            } catch (e2: Exception) {
+                                Log.e(TAG, "Failed to force close port $port: ${e2.message}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error during port cleanup: ${e.message}")
+                }
+            }.start()
+        }
+    }
 
+    init {
+        // Enable socket reuse and set other important socket options
+        setReuseAddr(true)
+        connectionLostTimeout = 60 // Seconds before considering a connection lost
     }
 
     override fun onOpen(clientWebsocket: WebSocket, handshake: ClientHandshake)
@@ -170,7 +220,7 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
     // Add this function to debug the clients map
     private fun updateClientMapForMultiSensorList(clientWebsocket: WebSocket, sensorList: List<Any>) {
-        // Extract any regular Sensor objects from the list
+        // Extract only the standard Android Sensor objects from the list (not custom sensor types)
         val sensors = sensorList.filterIsInstance<Sensor>()
         
         Log.d(TAG, "Updating clients map for ${sensors.size} standard sensors")
@@ -188,6 +238,14 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
             }
             
             Log.d(TAG, "Client now subscribed to ${subscribedTypes.size} sensor types: $subscribedTypes")
+        }
+        
+        // Also handle custom sensor types
+        val customSensors = sensorList.filter { 
+            it !is Sensor && (it is GPS || it is TouchSensors || it is WifiScanSensor || it is BluetoothScanSensor || it is NetworkScanSensor)
+        }
+        if (customSensors.isNotEmpty()) {
+            Log.d(TAG, "Client also subscribed to ${customSensors.size} custom sensor types")
         }
     }
     
@@ -221,6 +279,8 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         // Create a list to store a mix of standard sensors and custom network sensors
         val requestedSensorList = mutableListOf<Any>()
         var containsNetworkSensor = false
+        var containsGPS = false
+        var containsTouchScreen = false
 
         // Safely iterate over the non-null array
         requestedSensorTypes?.let { types ->
@@ -229,34 +289,51 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                 // First check if this is a network sensor type
                 val sensorTypeString = requestedSensorType.lowercase(Locale.getDefault())
                 
-                if (networkSensorManager.isNetworkSensor(sensorTypeString)) {
-                    when (sensorTypeString) {
-                        NetworkSensorManager.TYPE_WIFI_SCAN -> {
-                            requestedSensorList.add(WifiScanSensor())
-                            containsNetworkSensor = true
-                            Log.i(TAG, "Added WiFi scan sensor to multi-sensor request")
-                        }
-                        NetworkSensorManager.TYPE_BLUETOOTH_SCAN -> {
-                            requestedSensorList.add(BluetoothScanSensor())
-                            containsNetworkSensor = true
-                            Log.i(TAG, "Added Bluetooth scan sensor to multi-sensor request")
-                        }
-                        NetworkSensorManager.TYPE_NETWORK_SCAN -> {
-                            requestedSensorList.add(NetworkScanSensor())
-                            containsNetworkSensor = true
-                            Log.i(TAG, "Added Network scan sensor to multi-sensor request")
+                when (sensorTypeString) {
+                    // Check for network sensors
+                    NetworkSensorManager.TYPE_WIFI_SCAN -> {
+                        requestedSensorList.add(WifiScanSensor())
+                        containsNetworkSensor = true
+                        Log.i(TAG, "Added WiFi scan sensor to multi-sensor request")
+                    }
+                    NetworkSensorManager.TYPE_BLUETOOTH_SCAN -> {
+                        requestedSensorList.add(BluetoothScanSensor())
+                        containsNetworkSensor = true
+                        Log.i(TAG, "Added Bluetooth scan sensor to multi-sensor request")
+                    }
+                    NetworkSensorManager.TYPE_NETWORK_SCAN -> {
+                        requestedSensorList.add(NetworkScanSensor())
+                        containsNetworkSensor = true
+                        Log.i(TAG, "Added Network scan sensor to multi-sensor request")
+                    }
+                    // Check for GPS
+                    "gps" -> {
+                        // Check permission
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                                context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                            Log.w(TAG, "GPS requested but location permission not granted")
+                        } else {
+                            requestedSensorList.add(GPS())
+                            containsGPS = true
+                            Log.i(TAG, "Added GPS sensor to multi-sensor request")
                         }
                     }
-                } else {
-                    // Not a network sensor, try regular sensors
-                    val sensor = sensorManager.getSensorFromStringType(sensorTypeString)
-                    if (sensor == null) {
-                        clientWebsocket.close(CLOSE_CODE_SENSOR_NOT_FOUND, "sensor of type $sensorTypeString not found")
-                        requestedSensorList.clear()
-                        return
+                    // Check for touchscreen
+                    "touchscreen" -> {
+                        requestedSensorList.add(TouchSensors())
+                        containsTouchScreen = true
+                        Log.i(TAG, "Added TouchScreen sensor to multi-sensor request")
                     }
-                    requestedSensorList.add(sensor)
-                    Log.d(TAG, "Added standard sensor to multi-sensor request")
+                    // Try standard sensors for all other types
+                    else -> {
+                        val sensor = sensorManager.getSensorFromStringType(sensorTypeString)
+                        if (sensor == null) {
+                            Log.w(TAG, "Sensor type '$sensorTypeString' not found")
+                        } else {
+                            requestedSensorList.add(sensor)
+                            Log.d(TAG, "Added standard sensor to multi-sensor request: $sensorTypeString")
+                        }
+                    }
                 }
             }
         }
@@ -284,6 +361,47 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         if (containsNetworkSensor) {
             Log.i(TAG, "Multi-sensor request contains network sensors, starting network scanning")
             startNetworkScanning()
+        }
+        
+        // Register location updates if GPS is requested
+        if (containsGPS) {
+            Log.i(TAG, "Multi-sensor request contains GPS, requesting location updates")
+            try {
+                locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    100, // Reduce to 100ms for more frequent updates
+                    0f,
+                    this,
+                    handlerThread.looper
+                )
+                
+                // Also try to get network provider updates for better coverage
+                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    Log.d(TAG, "===> Also requesting location updates for NETWORK_PROVIDER in multi-sensor request")
+                    locationManager.requestLocationUpdates(
+                        LocationManager.NETWORK_PROVIDER,
+                        100,
+                        0f,
+                        this,
+                        handlerThread.looper
+                    )
+                }
+                
+                // Start the periodic updates mechanism
+                startPeriodicLocationUpdates()
+                
+                // Force an initial location update if available
+                val lastKnownLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                if (lastKnownLocation != null) {
+                    Log.d(TAG, "===> Sending initial GPS location in multi-sensor request: ${lastKnownLocation.latitude}, ${lastKnownLocation.longitude}")
+                    val jsonData = lastKnownLocation.toJson(lastKnownLocation = true)
+                    clientWebsocket.send(jsonData)
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "SecurityException when requesting GPS updates", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error setting up location updates in multi-sensor request", e)
+            }
         }
         
         notifyConnectionsChanged()
@@ -412,7 +530,6 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
     private fun handleGPSRequest(clientWebsocket: WebSocket)
     {
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
                 context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
         {
@@ -425,16 +542,47 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         }
 
         // In Android 5.0 permissions are granted at installation time
-        locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                0,
-                0f,
-                this,
-                handlerThread.looper
-        )
+        try {
+            Log.d(TAG, "===> Requesting location updates for GPS_PROVIDER")
+            locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    100, // Request updates more frequently - every 100ms
+                    0f,
+                    this,
+                    handlerThread.looper
+            )
+            
+            // Also try to get network provider updates
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                Log.d(TAG, "===> Also requesting location updates for NETWORK_PROVIDER")
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER,
+                    100, // Request updates more frequently - every 100ms
+                    0f,
+                    this,
+                    handlerThread.looper
+                )
+            }
+            
+            // Force an initial location update if available
+            val lastKnownLocation = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+            if (lastKnownLocation != null) {
+                Log.d(TAG, "===> Sending initial GPS location: ${lastKnownLocation.latitude}, ${lastKnownLocation.longitude}")
+                clientWebsocket.send(lastKnownLocation.toJson(lastKnownLocation = true))
+            } else {
+                Log.w(TAG, "===> No last known location available for initial update")
+            }
+            
+            // Start periodic location checking
+            startPeriodicLocationUpdates()
+        } catch (e: SecurityException) {
+            Log.e(TAG, "===> SecurityException requesting location updates", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "===> Error setting up location updates", e)
+        }
 
-        clientWebsocket.setAttachment( GPS() )
-
+        clientWebsocket.setAttachment(GPS())
+        Log.d(TAG, "===> Client attached with GPS: ${clientWebsocket.remoteSocketAddress}")
         notifyConnectionsChanged()
     }
 
@@ -447,19 +595,21 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
     override fun onLocationChanged(location: Location)
     {
-        if (getGPSConnectionCount() == 0)
-        {
-            Log.w( TAG, "onLocationChanged() :  " + "Location update received when no client with connected with GPS" )
-        }
-        for (websocket in connections)
-        {
-            if (websocket.getAttachment<Any>() is GPS)
-            {
-                try {
-                    websocket.send(location.toJson())
-                }catch (e : WebsocketNotConnectedException){
-                    e.printStackTrace()
-                }
+        // Add explicit debug logging
+        Log.d(TAG, "===> onLocationChanged fired with location: ${location.latitude}, ${location.longitude}")
+        
+        val jsonData = location.toJson()
+        Log.d(TAG, "===> JSON data: $jsonData")
+        
+        // Send to all GPS clients
+        for (websocket in connections) {
+            try {
+                websocket.send(jsonData)
+                Log.d(TAG, "===> Sent GPS data to client: ${websocket.remoteSocketAddress}")
+            } catch (e: WebsocketNotConnectedException) {
+                Log.e(TAG, "===> Failed to send location data: Client disconnected", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "===> Error sending location data", e)
             }
         }
     }
@@ -560,14 +710,18 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     // Method to unregister location updates
     private fun unregisterLocationListener() {
         // Count how many clients are still using GPS
-        val gpsClientCount = connections.count { it.getAttachment<Any>() is GPS }
+        val gpsClientCount = connections.count { 
+            val attachment = it.getAttachment<Any?>()
+            attachment is GPS || (attachment is List<*> && attachment.any { it is GPS })
+        }
         
         // Only unregister if this is the last client using GPS
         if (gpsClientCount <= 1) {
+            Log.i(TAG, "===> Last GPS client disconnected, removing location updates")
             locationManager.removeUpdates(this)
-            Log.i(TAG, "Location updates unregistered")
+            stopPeriodicLocationUpdates()
         } else {
-            Log.i(TAG, "Location updates still needed by $gpsClientCount clients")
+            Log.i(TAG, "===> Location updates still needed by $gpsClientCount clients")
         }
     }
 
@@ -666,12 +820,21 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         // ----------------------------------------
     }
 
+    // Stop periodic updates when no longer needed
+    private fun stopPeriodicLocationUpdates() {
+        locationUpdateRunnable?.let {
+            locationUpdateHandler.removeCallbacks(it)
+            locationUpdateRunnable = null
+            Log.i(TAG, "===> Stopped periodic location updates")
+        }
+    }
+    
     @kotlin.Throws(InterruptedException::class)
     override fun stop()
     {
         closeAllConnections()
-
         locationManager.removeUpdates(this)
+        stopPeriodicLocationUpdates()
 
         super.stop()
         Log.d(TAG, "stop() called")
@@ -701,11 +864,11 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         Thread { super.run() }.start()
 
         // see https://stackoverflow.com/questions/23209804/android-sensor-registerlistener-in-a-separate-thread
-
         handlerThread.start()
         handler = Handler(handlerThread.looper)
-
-
+        
+        // Initialize locationUpdateHandler with the same looper
+        locationUpdateHandler = Handler(handlerThread.looper)
 
         motionEventHandler = object : Handler(handlerThread.looper){
 
@@ -717,9 +880,7 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
                 for (websocket in connections)
                 {
-                    if(websocket.getAttachment<Any>() is TouchSensors)
-                    {
-                        when(motionEvent.actionMasked)
+                    when(motionEvent.actionMasked)
                         {
                             MotionEvent.ACTION_UP -> {
                                 message["action"] = "ACTION_UP"
@@ -761,9 +922,6 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                             }
 
 
-                        }
-
-
                     }
                 }
 
@@ -777,10 +935,13 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
 
     fun onMotionEvent(motionEvent: MotionEvent)
     {
+        // Add explicit debug logging
+        Log.d(TAG, "===> onMotionEvent fired: action=${motionEvent.action}, x=${motionEvent.x}, y=${motionEvent.y}")
 
         motionEventHandler.post{
 
             message.clear()
+            message["type"] = "android.sensor.touchscreen" // Add proper type for collector
             message["x"] = motionEvent.x
             message["y"] = motionEvent.y
             message["action"] = when (motionEvent.action)
@@ -790,20 +951,26 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                 MotionEvent.ACTION_MOVE -> "ACTION_MOVE"
                 else -> motionEvent.action.toString() // Use toString for other actions
             }
+            // Add timestamp in epoch milliseconds
+            message["timestamp"] = System.currentTimeMillis()
 
             val jsonData = gson.toJson(message)
-
-            // Find all clients that requested touch events
-            val touchClients = connections.filter { it.getAttachment<Any?>() is TouchSensors }
-            touchClients.forEach {
+            
+            // Send touch data to ALL connected clients instead of filtering
+            Log.d(TAG, "===> Broadcasting touch event to ${connections.size} clients")
+            
+            var sentCount = 0
+            connections.forEach {
                 try {
-                    it.send(jsonData as String)
+                    it.send(jsonData)
+                    sentCount++
                 } catch (e: WebsocketNotConnectedException) {
                     Log.w(TAG, "Attempted to send to a closed websocket (touch): ${it.remoteSocketAddress}")
                 } catch (e: Exception) {
                     Log.e(TAG, "Error sending touch event", e)
                 }
             }
+            Log.d(TAG, "===> Successfully sent touch data to $sentCount clients")
         }
     }
 
@@ -1131,18 +1298,138 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         Log.d(TAG, "========================================")
     }
 
+    // Create a method to start periodic location updates
+    private fun startPeriodicLocationUpdates() {
+        Log.d(TAG, "===> Starting periodic location updates")
+        
+        // Cancel any existing runnable
+        locationUpdateRunnable?.let {
+            locationUpdateHandler.removeCallbacks(it)
+        }
+        
+        // Create a new runnable for location updates
+        locationUpdateRunnable = object : Runnable {
+            override fun run() {
+                // Check if we have any GPS clients
+                val gpsClients = connections.filter { conn ->
+                    val attachment = conn.getAttachment<Any?>()
+                    attachment is GPS || (attachment is List<*> && attachment.any { it is GPS })
+                }
+                
+                if (gpsClients.isNotEmpty()) {
+                    Log.d(TAG, "===> Periodic update - found ${gpsClients.size} GPS clients")
+                    try {
+                        // Try to get location from multiple providers
+                        var location: Location? = null
+                        
+                        // Try GPS provider first
+                        try {
+                            location = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                            if (location != null) {
+                                Log.d(TAG, "===> Got location from GPS_PROVIDER")
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error getting GPS location", e)
+                        }
+                        
+                        // If GPS failed, try network provider
+                        if (location == null) {
+                            try {
+                                if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                                    location = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                                    if (location != null) {
+                                        Log.d(TAG, "===> Got location from NETWORK_PROVIDER")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error getting network location", e)
+                            }
+                        }
+                        
+                        // If we have a location, send it
+                        if (location != null) {
+                            Log.d(TAG, "===> Sending periodic location update: ${location.latitude}, ${location.longitude}")
+                            
+                            val jsonData = location.toJson(lastKnownLocation = true)
+                            
+                            // Send to all GPS clients
+                            var sentCount = 0
+                            for (websocket in gpsClients) {
+                                try {
+                                    websocket.send(jsonData)
+                                    sentCount++
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to send location update", e)
+                                }
+                            }
+                            Log.d(TAG, "===> Sent location data to $sentCount clients")
+                        } else {
+                            Log.w(TAG, "===> No location available for periodic update")
+                            
+                            // Request a single update to try to get a location
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                try {
+                                    locationManager.getCurrentLocation(
+                                        LocationManager.GPS_PROVIDER,
+                                        null,
+                                        { runnable -> handlerThread.looper.thread.run { runnable.run() } },
+                                        { location ->
+                                            if (location != null) {
+                                                Log.d(TAG, "===> Received current location: ${location.latitude}, ${location.longitude}")
+                                                onLocationChanged(location)
+                                            }
+                                        }
+                                    )
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to request current location", e)
+                                }
+                            } else {
+                                try {
+                                    // For older Android versions
+                                    locationManager.requestSingleUpdate(
+                                        LocationManager.GPS_PROVIDER,
+                                        this@SensorWebSocketServer,
+                                        handlerThread.looper
+                                    )
+                                    Log.d(TAG, "===> Requested single GPS update")
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to request single update", e)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in periodic location updates", e)
+                    }
+                } else {
+                    Log.d(TAG, "===> No GPS clients, skipping location updates")
+                }
+                
+                // Schedule the next update
+                locationUpdateHandler.postDelayed(this, 500) // 500ms interval
+            }
+        }
+        
+        // Start the periodic updates
+        locationUpdateRunnable?.let {
+            locationUpdateHandler.post(it)
+            Log.d(TAG, "===> Scheduled periodic location updates")
+        }
+    }
+
 }
 
 fun Location.toJson(lastKnownLocation : Boolean = false) : String
 {
     val message = mutableMapOf<String,Any>()
+    message["name"] = "Global Positioning System"
+    message["type"] = "android.sensor.gps"  // Add explicit type field for GPS data
     message["longitude"] = longitude
     message["latitude"] = latitude
     message["altitude"] = altitude
     message["bearing"] = bearing
     message["accuracy"] = accuracy
     message["speed"] = speed
-    message["time"] = time
+    message["timestamp"] = time
     message["lastKnowLocation"] = lastKnownLocation
 
 

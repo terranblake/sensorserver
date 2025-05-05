@@ -33,6 +33,11 @@ class HttpServer(val context : Context, val address : String, val portNo : Int) 
              port(portNo)
              timeout(10, TimeUnit.SECONDS)
              inetAddress(InetAddress.getByName(address))
+             
+             // Configure using available properties - no direct socket config in AndServer API
+             // The AndServer library will handle socket binding internally
+             timeout(30, TimeUnit.SECONDS) // Increase timeout for better reliability
+             
              listener(object : Server.ServerListener{
                  override fun onStarted() {
                      onStart?.invoke(httpServerInfo)

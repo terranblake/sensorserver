@@ -109,7 +109,6 @@ class HttpService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int
     {
-
         Log.d(TAG, "onStartCommand()")
         handleAndroid8andAbove()
 
@@ -133,12 +132,20 @@ class HttpService : Service() {
             return START_NOT_STICKY
         }
 
-
+        val port = appSettings.getHttpPortNo()
+        
+        // Check if port is available before starting server
+        if (!ensurePortAvailable(port)) {
+            // Port is in use, notify listener
+            serverStateListener?.onError(Exception("HTTP Port $port is already in use and could not be released"))
+            stopForeground()
+            return START_NOT_STICKY  
+        }
 
         httpServer = HttpServer(
                 context = applicationContext,
                 address = ipAddress,
-                portNo = appSettings.getHttpPortNo() )
+                portNo = port)
 
         httpServer?.setOnStart { serverInfo ->
             onStarted(serverInfo)
@@ -308,6 +315,63 @@ class HttpService : Service() {
 
     }
 
+    // Add these methods to forcefully check and release HTTP port
+    private fun forceReleasePort(port: Int): Boolean {
+        Log.i(TAG, "Attempting to forcefully release HTTP port $port")
+        try {
+            // Create a server socket on the same port with reuse address option
+            val serverSocket = java.net.ServerSocket()
+            serverSocket.reuseAddress = true
+            serverSocket.bind(java.net.InetSocketAddress(port))
+            Log.i(TAG, "Successfully bound to HTTP port $port after enabling reuseAddress")
+            serverSocket.close()
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to forcefully release HTTP port $port, will attempt reset", e)
+            // Try a different approach - create a temporary connection to the port to reset it
+            try {
+                val socket = java.net.Socket()
+                socket.reuseAddress = true
+                socket.soTimeout = 1000 // 1 second timeout
+                socket.connect(java.net.InetSocketAddress("localhost", port), 1000)
+                socket.close()
+                Log.i(TAG, "Successfully connected to HTTP port $port to trigger reset")
+                // Wait briefly for the OS to release the connection
+                Thread.sleep(500)
+                return true
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to connect to HTTP port $port for reset", e2)
+                return false
+            }
+        }
+    }
+
+    private fun ensurePortAvailable(port: Int): Boolean {
+        try {
+            // First try a simple check to see if the port is available
+            val serverSocket = java.net.ServerSocket(port, 1)
+            serverSocket.close()
+            Log.d(TAG, "HTTP Port $port is available")
+            return true
+        } catch (e: Exception) {
+            Log.e(TAG, "HTTP Port $port is already in use or unavailable", e)
+            
+            // If port is in use, try to forcefully release it
+            if (forceReleasePort(port)) {
+                Log.i(TAG, "Successfully released HTTP port $port, retrying connection")
+                try {
+                    val serverSocket = java.net.ServerSocket(port, 1)
+                    serverSocket.close()
+                    Log.d(TAG, "HTTP Port $port is now available after force release")
+                    return true
+                } catch (e2: Exception) {
+                    Log.e(TAG, "HTTP Port $port is still unavailable after force release", e2)
+                }
+            }
+            
+            return false
+        }
+    }
 
 }
 
