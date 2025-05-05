@@ -8,7 +8,7 @@ from collections import defaultdict, deque # Deque might still be needed for his
 import copy # For deepcopying nested_sensor_data for display
 
 # --- Import Core Logic ---
-from sensor_logic import (
+from server.templates.sensor_logic import (
     SensorState, # Potentially needed if display logic accesses attributes directly
     get_available_sensors,
     MultiSensorClient,

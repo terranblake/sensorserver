@@ -948,5 +948,4 @@ async def run_sensor_clients(http_endpoint, ws_base_uri):
         except Exception as e:
              logger.error(f"Error during cancellation of task {task.get_name()}: {e}", exc_info=True)
 
-
     logger.info("All sensor client tasks have completed or been cancelled.") 

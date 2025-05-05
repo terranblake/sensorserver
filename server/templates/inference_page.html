@@ -15,7 +15,7 @@
         </div>
         <div class="col-md-6">
             <h2>All Location Scores</h2>
-            <p class="text-muted">(Lower score is better)</p>
+            <p class="text-muted"><strong>Lower score = better match</strong> (highlighted = best match)</p>
             <ul id="scoreList" class="list-group"></ul>
             <p id="inferenceError" class="text-danger" style="display: none;"></p>
         </div>
@@ -56,20 +56,35 @@
             if (stateData.location_scores && typeof stateData.location_scores === 'object') {
                 const scores = stateData.location_scores;
                 const sortedLocations = Object.entries(scores).sort(([, scoreA], [, scoreB]) => scoreA - scoreB);
-
+                
                 if (sortedLocations.length > 0) {
+                    // Get the best score (lowest value)
+                    const bestLocation = sortedLocations[0][0];
+                    
                     sortedLocations.forEach(([location, score]) => {
                         const listItem = document.createElement('li');
                         listItem.className = 'list-group-item d-flex justify-content-between align-items-center';
                         listItem.textContent = location;
                         const scoreBadge = document.createElement('span');
                         scoreBadge.className = 'badge bg-primary rounded-pill';
+                        console.log(location, score);
                         scoreBadge.textContent = score.toFixed(2);
                         listItem.appendChild(scoreBadge);
-                        // Highlight the best prediction in the list
-                        if (location === prediction && prediction !== "Unknown") {
+                        
+                        // Highlight the best match (lowest score)
+                        if (location === bestLocation) {
                             listItem.classList.add('active');
+                            listItem.style.fontWeight = 'bold';
                         }
+                        
+                        // Also highlight the current prediction if it exists and is not Unknown
+                        if (location === prediction && prediction !== "Unknown") {
+                            if (location !== bestLocation) {
+                                listItem.classList.add('list-group-item-success');
+                            }
+                            listItem.innerHTML += ' <i class="fas fa-check"></i>';
+                        }
+                        
                         scoreListEl.appendChild(listItem);
                     });
                 } else {
