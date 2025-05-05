@@ -1,0 +1,590 @@
+# Sensor Logic System Contracts
+
+# Defines the structure and interactions of the redesigned sensor logic system.
+# Focuses on standardized data representation and flexible inference pipelines.
+
+# --- Data Contracts ---
+data_contracts:
+  # Contract for all time-series data stored in the Data Store.
+  # This includes raw sensor data and logged inference outputs.
+  data_point:
+    description: >
+      A single time-stamped data point with a defined type, key, and value.
+      All data entering or generated within the system is converted to this format
+      before being stored in the Data Store.
+    type: object
+    properties:
+      created_at:
+        description: ISO 8601 timestamp when the data point was created/recorded.
+        type: string
+      type:
+        description: >
+          The standardized type of the data point (e.g., 'android.sensor.pressure',
+          'android.sensor.wifi_scan.rssi', 'inference.location.prediction',
+          'inference.location.confidence', 'inference.movement.state'). This acts as a namespace.
+        type: string
+      key:
+        description: >
+          A unique identifier within the data type (e.g., the BSSID for a WiFi network,
+          'latitude'/'longitude' for GPS coordinates, the type/name of a calibrated fingerprint
+          for inference scores, or a specific metric name). Can be null if not applicable
+          (e.g., for a simple scalar sensor like pressure where the type is sufficient).
+        type: string
+        nullable: true
+      value:
+        description: The actual data value.
+        # Type is dynamic based on the data point type and key.
+        type: any # e.g., float for RSSI/pressure/confidence, string for state/prediction value
+
+  # Contract for a generated fingerprint (both calibrated and current).
+  # Represents aggregated statistics over a time window for specific data point types,
+  # linked to a specific inference configuration.
+  fingerprint:
+    description: >
+      A summary of data points over a specific time window, generated
+      according to the data point types defined by a specific inference configuration.
+    type: object
+    properties:
+      type:
+        description: >
+          The type of this fingerprint (e.g., 'location.kitchen', 'movement.stationary',
+          'inference.location.confidence.basement_at_desk'). Defines the context or category.
+        type: string
+      created_at:
+        description: ISO 8601 timestamp when this fingerprint object was created.
+        type: string
+      updated_at:
+        description: ISO 8601 timestamp when this fingerprint was last updated.
+        type: string
+      inference_ref: # Renamed from inference_config_ref
+        description: The name of the inference configuration this fingerprint supports.
+        type: string
+      raw_data_ref:
+        description: >
+          A reference or compressed representation of the raw data points
+          (in data_point format) used to generate this fingerprint. Allows for later inspection.
+        type: string # Or appropriate binary type for compressed data
+        nullable: true # Might be null for very large fingerprints
+      statistics:
+        description: Aggregated statistics for each data point type and key defined by the linked inference configuration.
+        type: object
+        # Keys are combined standardized data paths: '{data_point_type}.{key}' or '{data_point_type}' if no key.
+        # e.g., 'android.sensor.pressure', 'android.sensor.wifi_scan.rssi.fa:8f:ca:55:8f:f1'
+        '{aggregated_path}':
+          description: Statistics for a specific data point type and key combination.
+          type: object
+          properties:
+            median_value:
+              description: Median value of the data points for this path.
+              type: number
+            std_dev_value:
+              description: Standard deviation of the data points for this path.
+              type: number
+            num_samples:
+              description: Number of data samples used for this path.
+              type: integer
+            # Add other relevant statistics as needed (e.g., min, max, average)
+
+  # Contract for the definition/configuration of an inference type.
+  # These configurations are stored in a separate file managed by the Inference Module.
+  inference:
+    description: >
+      Defines the configuration for a specific type of inference run.
+    type: object
+    properties:
+      name:
+        description: A unique name for this inference configuration instance.
+        type: string
+      inference_type:
+        description: The type of inference performed (e.g., 'location', 'movement').
+        type: string
+      created_at:
+        description: ISO 8601 timestamp when this inference configuration was created.
+        type: string
+      updated_at:
+        description: ISO 8601 timestamp when this inference configuration was last updated.
+        type: string
+      data_point_types:
+        description: List of standardized data point types that fingerprints supporting this inference should contain.
+        type: array
+        items:
+          type: string
+      included_paths:
+        description: List of specific standardized data paths (type or type.key) to use from the data_point_types for inference calculation.
+        type: array
+        items:
+          type: string
+      sensor_weights:
+        description: Weights for each included data path.
+        type: object
+        # Keys are standardized data paths from 'included_paths'.
+        # Values are numerical weights. Weights should reflect relative importance.
+        '{data_path}':
+          type: number
+      window_duration_seconds:
+        description: The duration of the time window for input data (for current fingerprint/data).
+        type: number
+      confidence_threshold:
+        description: Threshold for predicting a specific outcome (0-1).
+        type: number
+        format: float
+      significant_difference:
+        description: Factor for determining confident prediction based on next best score.
+        type: number
+        format: float
+      # New configurable parameters for the scoring algorithm
+      min_std_dev_rssi:
+        description: Minimum standard deviation to use for RSSI in scoring to avoid division by zero.
+        type: number
+        format: float
+        default: 0.1
+      base_missing_network_penalty_diff:
+        description: Conceptual difference used for calculating penalty for missing networks.
+        type: number
+        format: float
+        default: 100.0
+      min_std_dev_pressure:
+        description: Minimum standard deviation to use for pressure in scoring.
+        type: number
+        format: float
+        default: 0.01
+      confidence_scaling_factor:
+        description: Scaling factor for mapping total score to confidence (higher value = confidence drops faster).
+        type: number
+        format: float
+        default: 0.01
+      # Add other type-specific inference parameters here
+
+  # Contract for the structured result of an inference run.
+  # This structure is used internally by the Inference Module and then converted
+  # into data_point objects for logging via the Data Store (in inference_data).
+  inference_result:
+    description: >
+      The structured result of running an inference configuration,
+      before conversion to data_point format for logging.
+    type: object
+    properties:
+      inference_name:
+        description: The name of the inference configuration that produced this result.
+        type: string
+      created_at:
+        description: ISO 8601 timestamp when the inference was performed.
+        type: string
+      overall_prediction: # Overall best prediction
+        description: The overall predicted outcome.
+        type: object
+        properties:
+          value:
+            description: The primary output value (e.g., predicted location name, movement state).
+            type: any
+          confidence:
+            description: Overall confidence score (0-1).
+            type: number
+            format: float
+            minimum: 0
+            maximum: 1
+      comparisons: # Details for each comparison target (e.g., calibrated fingerprint)
+        description: List of detailed comparison results against calibrated references.
+        type: array
+        items:
+          type: object
+          properties:
+            target_type:
+              description: Type of the calibrated reference (e.g., 'location.kitchen', 'movement.stationary').
+              type: string
+            target_id:
+              description: Identifier of the calibrated reference (e.g., 'kitchen', 'stationary').
+              type: string
+            total_score:
+              description: The overall similarity/difference score (meaning depends on algorithm).
+              type: number
+            confidence_score:
+              description: Confidence score (0-1) for this specific comparison.
+              type: number
+              format: float
+              minimum: 0
+              maximum: 1
+            path_contributions:
+              description: Detailed breakdown per included data path.
+              type: object
+              # Keys are the standardized data paths used in the inference config.
+              # e.g., 'android.sensor.pressure', 'android.sensor.wifi_scan.rssi'
+              '{data_path}':
+                type: object
+                properties:
+                  weighted_contribution:
+                    description: The weighted contribution of this path to the total score.
+                    type: number
+                  unweighted_metric:
+                    description: The unweighted metric for this path (e.g., normalized difference).
+                    type: number
+                  weight:
+                    description: The weight applied to this path in the inference configuration.
+                    type: number
+
+# --- Component Contracts ---
+component_contracts:
+  # Manages communication with connected device clients.
+  # Hosts HTTP and WebSocket servers for device clients.
+  device_manager:
+    description: >
+      Manages communication with connected device clients. Hosts the HTTP and
+      WebSocket servers that device clients connect to. Handles receiving raw
+      sensor data and pushing real-time updates to the frontend.
+    responsibilities:
+      - Host HTTP server for device client requests (e.g., sensor discovery).
+      - Host WebSocket server for receiving raw sensor data streams.
+      - Pass received raw sensor data to the Collector for processing.
+      - Maintain connections to frontend clients (e.g., via WebSocket) for real-time data push.
+      - Push real-time sensor data updates (or processed data) to connected frontend clients.
+    interface:
+      start:
+        description: Starts the HTTP and WebSocket servers for device clients.
+        parameters: {}
+        returns:
+          description: None (runs indefinitely until stop is called)
+      stop:
+        description: Stops the HTTP and WebSocket servers.
+        parameters: {}
+        returns:
+          description: None
+      # Add interface for frontend to connect for real-time updates if needed
+      # e.g., subscribe_to_realtime_data(websocket_connection)
+    interactions:
+      - Passes raw data (as received over network) to Collector (using `receive_raw_data`).
+      - Receives data (raw or processed) from Collector/Data Store for real-time push to frontend.
+
+  # Collects, standardizes, and logs raw sensor data.
+  collector:
+    description: >
+      Collects raw sensor data from the Device Manager, converts it into the
+      standardized data_point format, and logs it to the Data Store.
+      Also handles converting structured inference results to data_points for logging.
+    responsibilities:
+      - Receive raw sensor data from the Device Manager.
+      - Validate incoming raw data format.
+      - Convert raw sensor data into standardized data_point format ({type, key, value, created_at}).
+      - Pass data_point records (from raw data) to the Data Store for logging.
+      - Receive structured inference results from the Inference Module.
+      - Convert structured inference results into data_point format(s).
+      - Pass inference result data_point(s) to the Data Store for logging.
+    interface:
+      receive_raw_data:
+        description: Receive raw sensor data from the Device Manager.
+        parameters:
+          raw_data:
+            description: The raw data dictionary received from the sensor client.
+            type: object
+        returns:
+          description: None
+      receive_inference_result:
+        description: Receive structured inference results from the Inference Module for logging.
+        parameters:
+          inference_result:
+            description: The structured inference result dictionary.
+            $ref: '#/data_contracts/inference_result'
+        returns:
+          description: None
+    interactions:
+      - Receives raw data from Device Manager (using `receive_raw_data`).
+      - Receives structured inference results from Inference Module (using `receive_inference_result`).
+      - Writes `data_point`s (converted from raw data or inference results) to Data Store (using `set`).
+      - Provides data (raw or processed) to Device Manager for real-time push to frontend.
+
+  # Manages storage and retrieval of all time-series data points (raw sensor and inference).
+  data_store:
+    description: >
+      Centralized module for logging and accessing all time-series data points.
+      Stores data_point objects in time-series log files, potentially segmented by type or file name.
+    responsibilities:
+      - Append data_point to specified log file(s).
+      - Provide a query interface for data points within a time window and specified types/keys.
+      - Manage different log files: 'raw_data.log', 'inference_data.log', 'calibrated_fingerprints.json' (managed by Fingerprinting Module but listed here for context).
+    interface:
+      get:
+        description: Retrieve data points for specified types/keys within a time window.
+        parameters:
+          types:
+            description: List of standardized data point types to retrieve.
+            type: array
+            items:
+              type: string
+          started_at:
+            description: Start of the time window (ISO 8601 string).
+            type: string
+          ended_at:
+            description: End of the time window (ISO 8601 string).
+            type: string
+          keys:
+            description: Optional list of keys to filter by within the specified types.
+            type: array
+            items:
+              type: string
+            nullable: true
+          files:
+            description: Optional list of log file names to search within. Defaults to all relevant files.
+            type: array
+            items:
+              type: string
+            nullable: true
+        returns:
+          description: A list of data_point objects matching the criteria.
+          type: array
+          items:
+            $ref: '#/data_contracts/data_point'
+      set:
+        description: Write a data point to specified log files.
+        parameters:
+          data_point:
+            description: The data point object to write ({type, key, value, created_at}).
+            $ref: '#/data_contracts/data_point'
+          files:
+            description: List of log file names to write to (e.g., ['raw_data'], ['inference_data']).
+            type: array
+            items:
+              type: string
+            default: ['raw_data'] # Default to raw_data log
+        returns:
+          description: None
+    interactions:
+      - Receives `data_point` from Collector (using `set`).
+      - Provides `data_point`s to FingerprintingModule (using `get`).
+      - Provides `data_point`s to Inference Module (using `get`).
+      - Provides `data_point`s to Device Manager (for real-time push to frontend, using `get` via Collector).
+      - Provides `data_point`s to Frontend (conceptual, using `get` via API).
+
+  # Handles generation and management of fingerprints.
+  fingerprinting_module:
+    description: >
+      Manages calibrated fingerprints and generates real-time fingerprints
+      from data points in the DataStore. Fingerprints are linked to inference configurations.
+    responsibilities:
+      - Load calibrated fingerprints from storage (JSON file).
+      - Save/update calibrated fingerprints to storage (JSON file).
+      - Generate a fingerprint from data points within a time window, based on an inference config.
+      - Compress raw data points used for fingerprint generation.
+    interface:
+      generate_fingerprint:
+        description: Generate a fingerprint from data points in the Data Store, based on an inference config.
+        parameters:
+          fingerprint_type:
+            description: The type to assign to the generated fingerprint (e.g., 'location.current').
+            type: string
+          inference_config_name:
+            description: The name of the inference configuration to use for data point types and window duration.
+            type: string
+          ended_at:
+            description: End of the data window (ISO 8601 string). Start time is calculated using window_duration from inference config.
+            type: string
+        returns:
+          description: A fingerprint object.
+          $ref: '#/data_contracts/fingerprint'
+      load_calibrated_fingerprints:
+        description: Load all calibrated fingerprints from storage.
+        parameters: {}
+        returns:
+          description: A dictionary of calibrated fingerprints, keyed by fingerprint type.
+          type: object
+          # Keys are fingerprint types.
+          # Values are fingerprint objects.
+          '{fingerprint_type}':
+            $ref: '#/data_contracts/fingerprint'
+      save_calibrated_fingerprint:
+        description: Save a generated fingerprint as a calibrated fingerprint.
+        parameters:
+          fingerprint:
+            description: The fingerprint object to save.
+            $ref: '#/data_contracts/fingerprint'
+        returns:
+          description: None # Side effect is writing to storage
+      update_calibrated_fingerprint:
+        description: Update an existing calibrated fingerprint.
+        parameters:
+          fingerprint_type:
+            description: The type of the fingerprint to update.
+            type: string
+          fingerprint:
+            description: The new fingerprint object to replace the existing one.
+            $ref: '#/data_contracts/fingerprint'
+        returns:
+          description: None # Side effect is updating storage
+    interactions:
+      - Reads `data_point`s from Data Store (using `get` in `generate_fingerprint`).
+      - Reads/Writes `calibrated_fingerprints.json` (internal file system interaction, managed by this module).
+      - Provides `fingerprint`s to Inference Module (using `load_calibrated_fingerprints`).
+      - Provides generated `fingerprint`s (current and calibrated) to Frontend (conceptual, via API).
+      - Receives requests to save/update calibrated `fingerprint`s from Frontend (conceptual, via API).
+      - Reads `inference` configurations from Inference Module (conceptual, to get data_point_types and window_duration).
+
+  # Performs inference based on fingerprints and configuration.
+  inference_module:
+    description: >
+      Manages inference configurations, calculates similarity scores, predicts outcomes,
+      and logs results as data_points to the DataStore via the Collector.
+    responsibilities:
+      - Load/save inference configurations (JSON file).
+      - Execute inference runs based on configurations and current data/fingerprints.
+      - Apply configured weights and scoring algorithm.
+      - Calculate confidence scores and detailed metrics.
+      - Pass structured inference results to the Collector for conversion and logging.
+    interface:
+      run_inference:
+        description: Execute an inference run for a specific configuration.
+        parameters:
+          inference_config_name:
+            description: The name of the inference configuration to run.
+            type: string
+          current_time:
+            description: The current timestamp (ISO 8601 string) to use as the end of the data window.
+            type: string
+        returns:
+          description: None # Results are passed to the Collector
+    interactions:
+      - Reads `inference` configurations from `inference_configurations.json` (internal file system interaction).
+      - Reads `data_point`s from Data Store (using `get` to get current data window).
+      - Retrieves calibrated `fingerprint`s from Fingerprinting Module (using `load_calibrated_fingerprints`).
+      - Passes structured inference results to Collector (using `receive_inference_result`).
+      - Provides `inference` configurations and results (as `data_point`s via Collector/DataStore) to Frontend (conceptual, via API).
+      - Receives requests to save/update `inference` configurations from Frontend (conceptual, via API).
+
+  # User interface for configuration, visualization, and control.
+  frontend:
+    description: >
+      Web-based user interface for interacting with the sensor logic system.
+      Conceptual component for defining interactions.
+    responsibilities:
+      - Display real-time `data_point`s (via Data Store, potentially pushed by Device Manager).
+      - Display current `fingerprint` (via Fingerprinting Module or Device Manager).
+      - Display calibrated `fingerprint`s (via Fingerprinting Module).
+      - Configure fingerprinting settings (via API to Fingerprinting Module).
+      - Trigger fingerprint calibration (via API to Fingerprinting Module).
+      - Display latest inference results (via Data Store).
+      - Configure inference settings (via API to Inference Module).
+      - Allow managing multiple inference configurations (Future).
+    interactions:
+      - Reads `data_point`s from Data Store (using `get` via API).
+      - Reads data from Fingerprinting Module (using its interfaces via API).
+      - Writes configuration to FingerprintingModule (using its interfaces via API).
+      - Reads data from Inference Module (using its interfaces via API). # Reads inference configurations and results
+      - Writes configuration to InferenceModule (using its interfaces via API).
+      - Receives real-time data updates from Device Manager (conceptual, via WebSocket).
+
+# --- Interaction Contracts ---
+interaction_contracts:
+  - from: device_manager
+    to: collector
+    action: receive_raw_data
+    description: Passes raw sensor data received from device clients to the Collector.
+    data: raw_data_dictionary # Raw data format from client
+
+  - from: collector
+    to: data_store
+    action: set
+    description: Logs incoming raw sensor data converted to `data_point` format.
+    data: $ref: '#/data_contracts/data_point' # Exact data contract path
+    files: ['raw_data']
+
+  - from: collector
+    to: data_store
+    action: set
+    description: Logs inference result data_points (prediction/confidence) to raw_data.
+    data: $ref: '#/data_contracts/data_point' # Exact data contract path
+    files: ['raw_data']
+
+  - from: collector
+    to: data_store
+    action: set
+    description: Logs the full structured inference result as a `data_point` to inference_data.
+    data: $ref: '#/data_contracts/data_point' # Exact data contract path (representing the structured result)
+    files: ['inference_data']
+
+  - from: fingerprinting_module
+    to: data_store
+    action: get
+    description: Retrieves `data_point`s for fingerprint generation.
+    data: array of $ref: '#/data_contracts/data_point' # Exact data contract path
+
+  - from: fingerprinting_module
+    to: data_store
+    action: set
+    description: Logs fingerprint generation events (optional, as `data_point`).
+    data: $ref: '#/data_contracts/data_point' # Exact data contract path
+    files: ['raw_data'] # Or a dedicated fingerprinting log
+
+  - from: fingerprinting_module
+    to: file_system
+    action: read/write
+    description: Loads/saves calibrated fingerprints JSON file.
+    data: calibrated_fingerprints.json structure # Reference to file structure
+
+  - from: fingerprinting_module
+    to: inference_module
+    action: load_inference_configurations
+    description: Retrieves inference configurations to guide fingerprint generation.
+    data: dictionary of $ref: '#/data_contracts/inference' # Exact data contract path
+
+  - from: inference_module
+    to: fingerprinting_module
+    action: load_calibrated_fingerprints
+    description: Retrieves all stored calibrated `fingerprint`s.
+    data: dictionary of $ref: '#/data_contracts/fingerprint' # Exact data contract path
+
+  - from: inference_module
+    to: data_store
+    action: get
+    description: Retrieves `data_point`s (raw or previous inference) for inference.
+    data: array of $ref: '#/data_contracts/data_point' # Exact data contract path
+
+  - from: inference_module
+    to: collector
+    action: receive_inference_result
+    description: Passes structured inference results to the Collector for logging.
+    data: $ref: '#/data_contracts/inference_result' # Exact data contract path
+
+  - from: device_manager
+    to: frontend
+    action: push_realtime_data (conceptual)
+    description: Pushes real-time sensor data or processed data to connected frontend clients.
+    data: array of $ref: '#/data_contracts/data_point' # Or a simplified format
+
+  # Conceptual Frontend Interactions (via API endpoints on the server)
+  - from: frontend
+    to: data_store
+    action: get (via API)
+    description: Displays historical `data_point`s (raw or inference).
+
+  - from: frontend
+    to: fingerprinting_module
+    action: generate_fingerprint (via API)
+    description: Requests the current `fingerprint` for display.
+
+  - from: frontend
+    to: fingerprinting_module
+    action: load_calibrated_fingerprints (via API)
+    description: Retrieves calibrated `fingerprint`s for display.
+
+  - from: frontend
+    to: fingerprinting_module
+    action: save_calibrated_fingerprint / update_calibrated_fingerprint (via API)
+    description: Persists new or updated calibrated `fingerprint`s.
+
+  - from: frontend
+    to: inference_module
+    action: run_inference (via API)
+    description: Triggers an inference run.
+
+  - from: frontend
+    to: inference_module
+    action: load_inference_configurations (via API)
+    description: Retrieves `inference` configurations for display and selection.
+
+  - from: frontend
+    to: inference_module
+    action: save_inference_configuration / update_inference_configuration (via API)
+    description: Persists new or updated `inference` configurations.
+
+  - from: frontend
+    to: fingerprinting_module
+    action: configure (via API)
+    description: Updates fingerprinting configuration settings (e.g., default window size).
+

@@ -1,301 +1,234 @@
-<div align="center">
+# Sensor Data Processing and Inference Engine
 
-# SensorServer
-![GitHub](https://img.shields.io/github/license/umer0586/SensorServer?style=for-the-badge) ![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/umer0586/SensorServer?style=for-the-badge) ![GitHub all releases](https://img.shields.io/github/downloads/umer0586/SensorServer/total?label=GitHub%20downloads&style=for-the-badge) ![Android](https://img.shields.io/badge/Android%205.0+-3DDC84?style=for-the-badge&logo=android&logoColor=white) ![F-Droid](https://img.shields.io/f-droid/v/github.umer0586.sensorserver?style=for-the-badge) ![Websocket](https://img.shields.io/badge/protocol-websocket-green?style=for-the-badge)
+This project provides a Python-based backend system designed to collect, store, process, and analyze sensor data streamed from sources like the original Android `SensorServer` application. It transforms the raw sensor stream into structured, persistent data and enables advanced operations like location fingerprinting and activity inference.
 
-[<img src="https://github.com/user-attachments/assets/0f628053-199f-4587-a5b2-034cf027fb99" height="100">](https://github.com/umer0586/SensorServer/releases) [<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png"
-    alt="Get it on F-Droid"
-    height="100">](https://f-droid.org/packages/github.umer0586.sensorserver)
+Think of it as an **intelligent layer** built on top of the basic sensor streaming provided by the Android app.
 
- 
-### SensorServer transforms Android device into a versatile sensor hub, providing real-time access to its entire array of sensors. It allows multiple Websocket clients to simultaneously connect and retrieve live sensor data.The app exposes all available sensors of the Android device, enabling WebSocket clients to read sensor data related to device position, motion (e.g., accelerometer, gyroscope), environment (e.g., temperature, light, pressure), GPS location, and even touchscreen interactions.
+## Purpose and Use Cases
 
-<img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/01.png" width="250" heigth="250"> <img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/02.png" width="250" heigth="250"> <img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/03.png" width="250" heigth="250"> <img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/04.png" width="250" heigth="250"> <img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/05.png" width="250" heigth="250"> <img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/06.png" width="250" heigth="250">
-<img src="https://github.com/umer0586/SensorServer/blob/main/fastlane/metadata/android/en-US/images/phoneScreenshots/07.png" width="250" heigth="250">
+While the Android `SensorServer` app excels at broadcasting raw sensor values, this Python engine unlocks more sophisticated analysis and state detection:
 
-</div>
+*   **Context-Aware Location:** Instead of relying solely on GPS (which is often inaccurate indoors), you can use Wi-Fi scans, Bluetooth signals, and pressure sensor readings to create detailed "fingerprints" of specific locations (e.g., "Kitchen", "Office Desk", "Basement"). The inference engine can then compare live sensor data to these fingerprints to determine the device's location with higher confidence, even indoors.
+*   **Activity Recognition:** By analyzing patterns in accelerometer, gyroscope, and potentially other sensors over time, you could build inference configurations to detect states like "Stationary", "Walking", "In Vehicle", etc.
+*   **Environmental Monitoring:** Log and analyze trends in pressure, temperature (if available), or ambient light over long periods.
+*   **Complex Event Detection:** Combine multiple sensor types and inference results to trigger actions based on complex conditions (e.g., "Device is stationary *and* in the 'Office' location *and* pressure has dropped significantly").
+*   **Data Logging and Analysis:** Provides a persistent, queryable log of all sensor data and inference results, enabling offline analysis, model training, and debugging.
+*   **Second-Order Inference:** Use the *output* of one inference as an *input* to another. For example:
+    *   **Detailed Movement Patterns:** Combine the `inference.location.confidence` and `inference.location.prediction` data points with raw IMU data (accelerometer, gyroscope) to train and run a *second* inference configuration. This could detect more nuanced movements like "Walking from Office to Living Room" or specific, location-dependent activities like "Using the Basement Bathroom".
+    *   **How it Works:** The first inference (e.g., `location`) logs its results. A second inference configuration (e.g., `detailed_movement`) lists both the raw IMU sensor types *and* the first inference's output types (like `inference.location.confidence`) in its `data_point_types`. Fingerprints for this second configuration (e.g., `detailed_movement.office_to_livingroom`) are calibrated using periods where that specific movement occurred, capturing patterns across *all* its input types (IMU + location confidence). Running the `detailed_movement` inference then compares current IMU *and* location confidence data against these complex fingerprints.
 
+## Understanding the Output: Data Structures
 
+This system works with standardized data structures defined in `tasks/contract.yml`.
 
-Since this application functions as a Websocket Server, you will require a Websocket Client API to establish a connection with the application. To obtain a Websocket library for your preferred programming language click [here](https://github.com/facundofarias/awesome-websockets). 
- 
- 
- 
- 
- # Usage
- To receive sensor data, **Websocket client**  must connect to the app using following **URL**.
- 
-                 ws://<ip>:<port>/sensor/connect?type=<sensor type here> 
- 
- 
-  Value for the `type` parameter can be found by navigating to **Available Sensors** in the app. 
- 
- For example
- 
- * For **accelerometer** `/sensor/connect?type=android.sensor.accelerometer` .
- 
- * For **gyroscope** `/sensor/connect?type=android.sensor.gyroscope` .
- 
- * For **step detector**  `/sensor/connect?type=android.sensor.step_detector`
+**1. `data_point` (The Foundational Unit):**
 
- * so on... 
- 
- Once connected, client will receive sensor data in `JSON Array` (float type values) through `websocket.onMessage`. 
- 
- A snapshot from accelerometer.
- 
- ```json
-{
-  "accuracy": 2,
-  "timestamp": 3925657519043709,
-  "values": [0.31892395,-0.97802734,10.049896]
-}
- ```
-![axis_device](https://user-images.githubusercontent.com/35717992/179351418-bf3b511a-ebea-49bb-af65-5afd5f464e14.png)
+   Every piece of sensor data or inference output is stored as a `data_point` in the log files (`data_logs/*.log`).
 
-where
+   ```
+   +---------------------+-----------------------------------------+
+   | Field               | Example Value                           |
+   +---------------------+-----------------------------------------+
+   | created_at (str)    | "2023-10-27T10:00:05.123Z"              |
+   | type (str)          | "android.sensor.pressure"               |
+   |                     | "android.sensor.wifi_scan.rssi"         |
+   |                     | "inference.location.prediction"       |
+   | key (str | null)   | null                                    |
+   |                     | "aa:bb:cc:dd:ee:ff" (MAC address)     |
+   |                     | "location_inference_v1" (Config Name) |
+   | value (any)         | 1013.25                                 |
+   |                     | -65                                     |
+   |                     | "kitchen"                               |
+   +---------------------+-----------------------------------------+
+   ```
 
-| Array Item  | Description |
-| ------------- | ------------- |
-| values[0]  | Acceleration force along the x axis (including gravity)  |
-| values[1]  | Acceleration force along the y axis (including gravity)  |
-| values[2]  | Acceleration force along the z axis (including gravity)  |
+**2. `fingerprint` (Statistical Summary):**
 
-And [timestamp](https://developer.android.com/reference/android/hardware/SensorEvent#timestamp) is the time in nanoseconds at which the event happened
+   Generated by the `FingerprintingModule`, often representing a "calibrated" state (e.g., the typical sensor readings in the "Kitchen"). Stored in `fingerprints/calibrated_fingerprints.json`.
 
-Use `JSON` parser to get these individual values.
+   ```
+   +---------------------+---------------------------------------------------+
+   | Field               | Example Value                                     |
+   +---------------------+---------------------------------------------------+
+   | type (str)          | "location.kitchen"                                |
+   | created_at (str)    | "2023-10-27T11:30:00Z"                            |
+   | updated_at (str)    | "2023-10-27T11:35:10Z"                            |
+   | inference_ref (str) | "location_inference_v1"                           |
+   | raw_data_ref (str)  | (Compressed Hex representation of source data_points) |
+   | statistics (dict)   | {                                                 |
+   |                     |   "android.sensor.pressure": {                   |
+   |                     |     "median_value": 1014.5,                      |
+   |                     |     "std_dev_value": 0.2,                       |
+   |                     |     "num_samples": 120                          |
+   |                     |   },                                              |
+   |                     |   "android.sensor.wifi_scan.rssi.aa:bb:cc:dd:ee:ff": { |
+   |                     |     "median_value": -55.0,                      |
+   |                     |     "std_dev_value": 3.5,                       |
+   |                     |     "num_samples": 65                           |
+   |                     |   }, ... (more paths)                             |
+   |                     | }                                                 |
+   +---------------------+---------------------------------------------------+
+   ```
 
- 
-**Note** : *Use  following links to know what each value in **values** array corresponds to*
-- For motion sensors [/topics/sensors/sensors_motion](https://developer.android.com/guide/topics/sensors/sensors_motion)
-- For position sensors [/topics/sensors/sensors_position](https://developer.android.com/guide/topics/sensors/sensors_position)
-- For Environmental sensors [/topics/sensors/sensors_environment](https://developer.android.com/guide/topics/sensors/sensors_environment)
+**3. `inference_result` (Output of an Inference Run):**
 
-## Undocumented (mostly QTI) sensors on Android devices
-Some Android devices have additional sensors like **Coarse Motion Classifier** `(com.qti.sensor.motion_classifier)`, **Basic Gesture** `(com.qti.sensor.basic_gestures)` etc  which are not documented on offical android docs. Please refer to this [Blog](https://louis993546.medium.com/quick-tech-support-undocumented-mostly-qti-sensors-on-android-devices-d7e2fb6c5064) for corresponding values in `values` array  
+   Generated by the `InferenceModule` after comparing current data to calibrated fingerprints. Logged as a `data_point` with `type = "inference.{type}.result"` in `inference_data.log`.
 
-## Supports multiple connections to multiple sensors simultaneously
+   ```
+   +-------------------------+--------------------------------------+
+   | Field                   | Example Value                        |
+   +-------------------------+--------------------------------------+
+   | inference_name (str)    | "location_inference_v1"              |
+   | created_at (str)        | "2023-10-27T12:05:15Z"              |
+   | overall_prediction(dict)| {                                    |
+   |                         |   "value": "kitchen",               |
+   |                         |   "confidence": 0.92                |
+   |                         | }                                    |
+   | comparisons (list)      | [                                    |
+   |                         |   {                                  |
+   |                         |     "target_type": "location.kitchen", |
+   |                         |     "target_id": "kitchen",          |
+   |                         |     "total_score": 15.3, (Lower is better? Depends on algo) |
+   |                         |     "confidence_score": 0.92,         |
+   |                         |     "path_contributions": { ... }    |
+   |                         |   },                                 |
+   |                         |   {                                  |
+   |                         |     "target_type": "location.office",|
+   |                         |     "target_id": "office",           |
+   |                         |     "total_score": 88.1,            |
+   |                         |     "confidence_score": 0.15,         |
+   |                         |     "path_contributions": { ... }    |
+   |                         |   }, ... (more comparisons)         |
+   |                         | ]                                    |
+   +-------------------------+--------------------------------------+
+   ```
 
-Multiple WebSocket clients can connect to a specific type of sensor. For example, by connecting to `/sensor/connect?type=android.sensor.accelerometer` multiple times, separate connections to the accelerometer sensor are created. Each connected client will receive accelerometer data simultaneously.
+**4. `fingerprint` (Second-Order Example):**
 
-Additionally, it is possible to connect to different types of sensors from either the same or different machines. For instance, one WebSocket client object can connect to the accelerometer, while another WebSocket client object can connect to the gyroscope. To view all active connections, you can select the "Connections" navigation button.
- 
-## Example: Websocket client (Python) 
-Here is a simple websocket client in python using [websocket-client api](https://github.com/websocket-client/websocket-client) which receives live data from accelerometer sensor.
+   This fingerprint could be used for a "Detailed Movement" inference. Notice it includes statistics for raw sensors *and* the output of a previous "Location" inference.
 
-```python
-import websocket
-import json
+   ```
+   +---------------------+---------------------------------------------------+
+   | Field               | Example Value                                     |
+   +---------------------+---------------------------------------------------+
+   | type (str)          | "detailed_movement.office_to_livingroom"          |
+   | created_at (str)    | "2023-10-27T14:00:00Z"                            |
+   | updated_at (str)    | "2023-10-27T14:05:00Z"                            |
+   | inference_ref (str) | "movement_inference_v2"                           |
+   | raw_data_ref (str)  | (Compressed Hex representation of source data_points) |
+   | statistics (dict)   | {                                                 |
+   |                     |   "android.sensor.accelerometer.x": {            |
+   |                     |     "median_value": 0.1,                         |
+   |                     |     "std_dev_value": 1.5,                         |
+   |                     |     "num_samples": 300                          |
+   |                     |   },                                              |
+   |                     |   "android.sensor.gyroscope.z": {                |
+   |                     |     "median_value": -0.05,                       |
+   |                     |     "std_dev_value": 0.8,                         |
+   |                     |     "num_samples": 300                          |
+   |                     |   },                                              |
+   |                     |   "inference.location.confidence": {             |
+   |                     |     "median_value": 0.85,                        |
+   |                     |     "std_dev_value": 0.1,                         |
+   |                     |     "num_samples": 30  # Fewer samples likely      |
+   |                     |   },                                              |
+   |                     |   "inference.location.prediction": {             |
+   |                     |     "#samples_office": 15, # Non-numeric stats   |
+   |                     |     "#samples_livingroom": 15                    |
+   |                     |   }, ... (more sensor/inference paths)            |
+   |                     | }                                                 |
+   +---------------------+---------------------------------------------------+
+   ```
 
+## Core Architectural Changes
 
-def on_message(ws, message):
-    values = json.loads(message)['values']
-    x = values[0]
-    y = values[1]
-    z = values[2]
-    print("x = ", x , "y = ", y , "z = ", z )
+The original `SensorServer` functioned as a WebSocket server hosted directly on an Android device. This version implements a standalone Python server with the following key differences:
 
-def on_error(ws, error):
-    print("error occurred ", error)
-    
-def on_close(ws, close_code, reason):
-    print("connection closed : ", reason)
-    
-def on_open(ws):
-    print("connected")
-    
+1.  **Server-Side Logic:** The primary processing, storage, and inference logic now resides in this Python backend, not on the device.
+2.  **Modular Design:** The system is broken down into distinct components:
+    *   `DeviceManager`: Interacts with the sensor source (e.g., the original SensorServer Android app or another compatible device client) to fetch raw data. It also hosts WebSocket endpoints for potential frontend real-time communication.
+    *   `Collector`: Receives raw data, standardizes it into a `data_point` format, and passes it to the `DataStore`. It also handles formatting and logging inference results.
+    *   `DataStore`: Persists all standardized `data_point` objects (raw sensor readings, inference results) into time-series log files (`data_logs/raw_data.log`, `data_logs/inference_data.log`).
+    *   `FingerprintingModule`: Generates statistical summaries (`fingerprints`) from sensor data over time windows based on inference configurations. Manages calibrated fingerprints stored in `fingerprints/calibrated_fingerprints.json`.
+    *   `InferenceModule`: Executes configurable inference logic based on comparing current data/fingerprints against calibrated fingerprints. Manages inference configurations stored in `configs/inference_configurations.json`.
+3.  **Data Standardization:** All sensor readings and inference outputs are converted to a consistent `data_point` format before storage (see diagram above).
+4.  **Persistent Storage:** Sensor data and inference results are logged to disk, allowing for historical analysis and retrieval, unlike the purely streaming nature of the original app.
+5.  **Fingerprinting & Inference:** Introduces advanced capabilities for creating statistical fingerprints and running inference comparisons (see Purpose section and diagrams).
+6.  **Configuration:** Manages system behavior through JSON configuration files for inference logic (`inference_configurations.json`) and calibrated fingerprints (`calibrated_fingerprints.json`).
+7.  **API Control:** Provides a Flask-based HTTP API for interacting with the system (fetching data, managing fingerprints, managing inference configurations, triggering inference runs).
 
-def connect(url):
-    ws = websocket.WebSocketApp(url,
-                              on_open=on_open,
-                              on_message=on_message,
-                              on_error=on_error,
-                              on_close=on_close)
+## Data Flow Visualization
 
-    ws.run_forever()
- 
- 
-connect("ws://192.168.0.103:8080/sensor/connect?type=android.sensor.accelerometer") 
+```mermaid
+graph LR
+    A[Android SensorServer App] -- Raw JSON Stream --> B(DeviceManager);
+    B -- Raw Data Dict --> C(Collector);
+    C -- Standardized data_point --> D(DataStore);
+    D -- Appends --> E[data_logs/raw_data.log];
 
+    subgraph Inference & Fingerprinting
+        F(API Call / Trigger) --> G(FingerprintingModule);
+        F --> H(InferenceModule);
+        G -- Queries data_points --> D;
+        G -- Reads/Writes --> I[fingerprints/...json];
+        G -- Provides Calibrated FP --> H;
+        H -- Queries data_points --> D;
+        H -- Reads --> J[configs/...json];
+        H -- Generates inference_result --> C;
+    end
+
+    C -- Inference data_points --> D;
+    D -- Appends --> K[data_logs/inference_data.log];
+
+    subgraph Optional Frontend
+      L[Frontend Client] <-- Real-time data_points --> B;
+      L <-- Query via API --> M{Flask API Endpoints};
+      M -- Interacts with --> G;
+      M -- Interacts with --> H;
+      M -- Interacts with --> D;
+    end
 ```
- *Your device's IP might be different when you tap start button, so make sure you are using correct IP address at client side*
 
- Also see [
-Connecting to Multiple Sensors Using Threading in Python](https://github.com/umer0586/SensorServer/wiki/Connecting-to-Multiple-Sensors-Using-Threading-in-Python) 
+*(Simplified view; actual interactions via method calls between Python modules)*
 
+## Key API Endpoints (Flask)
 
-## Connecting To The Server without hardcoding IP Address and Port No
-In networks using DHCP (Dynamic Host Configuration Protocol), devices frequently receive different IP addresses upon reconnection, making it impractical to rely on hardcoded network configurations. To address this challenge, the app supports Zero-configuration networking (Zeroconf/mDNS), enabling automatic server discovery on local networks. This feature eliminates the need for clients to hardcode IP addresses and port numbers when connecting to the WebSocket server. When enabled by the app user, the server broadcasts its presence on the network using the service type `_websocket._tcp`, allowing clients to discover the server automatically. Clients can now implement service discovery to locate the server dynamically, rather than relying on hardcoded network configurations.
+*   `GET /api/data`: Retrieve `data_point` objects from `DataStore` with filters for time window, types, keys, and files.
+*   `GET /api/fingerprints`: Fetch all calibrated fingerprints.
+*   `POST /api/fingerprints/generate`: Generate a fingerprint for a given type, inference config, and end time.
+*   `POST /api/fingerprints/calibrate`: Save or update a calibrated fingerprint.
+*   `GET /api/inference_configs`: Fetch all inference configurations.
+*   `POST /api/inference_configs`: Save a new inference configuration.
+*   `PUT /api/inference_configs/<config_name>`: Update an existing inference configuration.
+*   `POST /api/inference/run/<config_name>`: Trigger an inference run for a specific configuration.
 
-See complete python Example at [Connecting To the Server Using Service Discovery](https://github.com/umer0586/SensorServer/wiki/Connecting-To-the-Server-Using-Service-Discovery) 
- 
-## Using Multiple Sensors Over single Websocket Connection
-You can also connect to multiple sensors over single websocket connection. To use multiple sensors over single websocket connection use following **URL**.
+*(Refer to `server/main.py` for detailed parameters and implementation)*
 
-                 ws://<ip>:<port>/sensors/connect?types=["<type1>","<type2>","<type3>"...]
-
-By connecting using above URL you will receive JSON response containing sensor data along with a type of sensor. See complete example at [Using Multiple Sensors On Single Websocket Connection](https://github.com/umer0586/SensorServer/wiki/Using-Multiple-Sensors-On-Single-Websocket-Connection). Avoid connecting too many sensors over single connection
-
-## Reading Touch Screen Data
-By connecting to the address `ws://<ip>:<port>/touchscreen`, clients can receive touch screen events in following JSON formate.
-
-|   Key   |   Value                  |
-|:-------:|:-----------------------:|
-|   x     |         x coordinate of touch           |
-|   y     |         y coordinate of touch          |
-| action  | ACTION_MOVE or ACTION_UP or ACTION_DOWN |
-
-"ACTION_DOWN" indicates that a user has touched the screen.
-"ACTION_UP" means the user has removed their finger from the screen.
-"ACTION_MOVE" implies the user is sliding their finger across the screen.
-See [Controlling Mouse Movement Using SensorServer app](https://github.com/umer0586/SensorServer/wiki/Controlling-Mouse-Using-SensorServer-App)
-
-## Getting Device Location Using GPS
-You can access device location through GPS using following URL.
-
-                 ws://<ip>:<port>/gps
-                 
-See [Getting Data From GPS](https://github.com/umer0586/SensorServer/wiki/Getting-Data-From-GPS) for more details
-
-
-
-## Real Time plotting
-See [Real Time Plot of Accelerometer (Python)](https://github.com/umer0586/SensorServer/wiki/Real-Time-Plot-Example-(-Python)) using this app
-
-![result](https://user-images.githubusercontent.com/35717992/208961337-0f69757e-e85b-4637-8c39-fa5554d85921.gif)
-
-
-
-https://github.com/umer0586/SensorServer/assets/35717992/2ebf865d-529e-4702-8254-347df98dc795
-
-## Testing in a Web Browser
-You can also view your phone's sensor data in a Web Browser. Open the app's navigation drawer menu and enable `Test in a Web Browser`.Once the web server is running, the app will display an address on your screen. This address will look something like `http://<ip>:<port>`.On your device or another computer on the same network, open a web browser and enter that address. The web browser will now display a list of all the sensors available on your device. The web interface have options to connect to and disconnect from individual sensors, allowing you to view their real-time data readings.
-
-<img width="742" src="https://github.com/user-attachments/assets/6ddac5cc-dc88-4ab2-aca9-b53fbd57a9c2">
-
-![plotting](https://github.com/user-attachments/assets/297a001a-ed88-4299-9cf1-31451fff2c18)
-
-
-
-
-This web app is built using Flutter and its source could be found under [sensors_dashboard](https://github.com/umer0586/SensorServer/tree/main/sensors_dashboard). However, there's one current limitation to be aware of. The app is built with Flutter using the `--web-renderer canvaskit` option. This means that the resulting app will have some dependencies that need to be downloaded from the internet. This means that any device accessing the web app through a browser will require an internet connection to function properly.
-
-The web app is built and deployed to Android's assets folder via `python deploy_web_app.py`
-
-
-## Connecting over Hotspot :fire:
-If you don't have Wifi network at your work place you can directly connect websocket clients to the app by enabling **Hotspot Option** from settings. Just make sure that websocket clients are connected to your phone's hotspot
-
-
-## Connecting over USB (using ADB)
-To connect over USB make sure `USB debugging` option is enable in your phone and `ADB` (android debug bridge) is available in your machine
-* **Step 1 :** Enable `Local Host` option in app
-* **Step 2** : Run adb command `adb forward tcp:8081 tcp:8081` (8081 is just for example) from client
-* **Step 3** : use address `ws://localhost:8081:/sensor/connect?type=<sensor type here>` to connect 
-
-Make sure you have installed your android device driver and `adb devices` command detects your connected android phone.
-
-## Links To Projects Utilizing SensorServer
-1. Utilizing smartphone IMU sensors for controlling a robot via ROS ([http://www.rc.is.ritsumei.ac.jp/FILES/PBL5/2024/IMU_based_control/](http://www.rc.is.ritsumei.ac.jp/FILES/PBL5/2024/IMU_based_control/))
-2. Use smartphone as "sensor" into RTMaps studio ([https://github.com/Intempora/smartphone-sensors](https://github.com/Intempora/smartphone-sensors))
-3. Streams IMU and GPS data via WebSocket from Android app and integrates with MinIO CSI server for building-scale WiFi sensing testbeds. ([https://github.com/WS-UB/WiSense-Mobile-Client](https://github.com/WS-UB/WiSense-Mobile-Client))
-4. SLAM System with IMU and Wifi Synchronization. ([https://github.com/WS-UB/imu_publisher](https://github.com/WS-UB/imu_publisher))
-5. Middleware for Streaming Real Device Sensor Data to Android Emulators. ([https://github.com/ingmarfjolla/android-sensor-injection](https://github.com/ingmarfjolla/android-sensor-injection))
-6. A Python graphical user interface to visualize real-time data streams from a generic WebSocket & HTTP source ([https://github.com/AlyShmahell/robolytics](https://github.com/AlyShmahell/robolytics))
-7. Tool designed to address the current limitations of passthrough mode in modern virtual reality (VR) headsets.([https://github.com/LucasHartmanWestern/Screen-Sight](https://github.com/LucasHartmanWestern/Screen-Sight))
-8. Real-Time Sensor Data Streaming, Storage, and Visualization System with Kafka, InfluxDB, and Grafana.([https://github.com/TouradBaba/Iot_sensors_streaming](https://github.com/TouradBaba/Iot_sensors_streaming))
-9. A project that uses data from IMU, GPS and Barometer modules to estimate position based on space state filters implementation [https://github.com/Peterex08/IMUGPS](https://github.com/Peterex08/IMUGPS)
-10. A Windows desktop application that transforms a smartphone into a gesture‑based remote control. It streams real‑time sensor (gyroscope) data over WebSockets, recognizes swipe gestures, and maps them to system or media actions on the desktop [https://github.com/Guerric9018/Frogmote](https://github.com/Guerric9018/Frogmote)
-11. PHASETIMER ([https://github.com/zenbooster/phasetimer](https://github.com/zenbooster/phasetimer))
-12. Score real-time walking data of users wearing an Andriod device. ([https://github.com/eliasHw/BME450W_Fall2022](https://github.com/eliasHw/BME450W_Fall2022))
-13. Wireless Steering wheel using python and android with paddles and breaks. ([https://rutube.ru/video/03d53de54054337a8c54b825f7fcc3fe/](https://rutube.ru/video/03d53de54054337a8c54b825f7fcc3fe/))
-14. [https://github.com/strets123/walking-pictionary](https://github.com/strets123/walking-pictionary)
-
-If you're using this app in a project and would like to share the link, feel free to submit a pull request with the link and a brief description so that it can be helpful to others.
-
-# My Other Android Projects
-1. [SensaGram](https://github.com/umer0586/SensaGram). For streaming realtime sensor data over UDP
-2. [DroidPad](https://github.com/umer0586/DroidPad). Android app for creating customizable control interfaces for Bluetooth Low energy,WebSocket, MQTT, TCP, and UDP protocols. 
-
-## Found this useful
-<a href="https://www.buymeacoffee.com/umerfarooq" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
-
-Send Bitcoin at 1NHkiJmjUdjqbCKJf6ZksGKMvYu52Q5tew 
-
-OR
-
-Scan following QR code with bitcoin wallet app to send bitcoins
-
-[<img src="https://github.com/umer0586/SensorServer/assets/35717992/11cd8194-6e9c-469c-a09f-06fd1bc93acd" height="200">](https://github.com/umer0586/SensorServer/assets/35717992/11cd8194-6e9c-469c-a09f-06fd1bc93acd)
-
-
-## Build & Test
-
-### Building the App
+## Setup and Running
 
 1.  **Prerequisites:**
-    *   Android Studio (latest stable version recommended)
-    *   Android SDK configured
-    *   Git
+    *   Python 3.x
+    *   Install dependencies: `pip install Flask websockets aiohttp` (add other dependencies as needed).
+    *   An active sensor source (like the original SensorServer Android app running on a device on the same network).
 
-2.  **Clone the Repository:**
+2.  **Configuration:**
+    *   Modify constants in `server/main.py` if needed (e.g., `DEVICE_MANAGER_LISTEN_HOST` should be the IP address of the machine running this Python server, accessible by the Android app). Ensure ports don't conflict.
+    *   Create initial (empty or pre-configured) JSON files if desired:
+        *   `configs/inference_configurations.json`
+        *   `fingerprints/calibrated_fingerprints.json`
+
+3.  **Run the Server:**
     ```bash
-    git clone https://github.com/umer0586/SensorServer.git
-    cd SensorServer
+    python server/main.py
     ```
+    This will start:
+    *   The `DeviceManager` attempting to connect to the configured device WebSocket.
+    *   The `DeviceManager`'s own HTTP/WebSocket servers for device/frontend communication.
+    *   The Flask web server providing the API and potentially web pages.
 
-3.  **Open in Android Studio:**
-    *   Open Android Studio.
-    *   Select "Open an Existing Project".
-    *   Navigate to the cloned `SensorServer` directory and open it.
-    *   Allow Gradle to sync and download dependencies.
-
-4.  **Build APK:**
-    *   **Debug APK:**
-        *   Go to `Build` > `Build Bundle(s) / APK(s)` > `Build APK(s)`.
-        *   The debug APK will be located in `app/build/outputs/apk/debug/`.
-    *   **Release APK (Optional - Requires Signing):**
-        *   Go to `Build` > `Generate Signed Bundle / APK`.
-        *   Follow the prompts to create or use an existing keystore and build a signed release APK.
-
-5.  **Build via Command Line (Gradle Wrapper):**
-    *   Ensure you have executable permissions for the Gradle wrapper:
-      ```bash
-      chmod +x ./gradlew
-      ```
-    *   **Assemble Debug APK:**
-      ```bash
-      ./gradlew assembleDebug
-      ```
-      (Find APK in `app/build/outputs/apk/debug/`)
-    *   **Assemble Release APK (Requires signing configuration in `build.gradle`):**
-      ```bash
-      ./gradlew assembleRelease
-      ```
-
-### Running Tests
-
-1.  **Unit Tests (via Android Studio):**
-    *   Navigate to the `app/src/test/java` directory in the Project view.
-    *   Right-click on a specific test file or the `java` directory.
-    *   Select "Run 'Tests in ...'".
-    *   View results in the "Run" tool window.
-
-2.  **Unit Tests (via Command Line):**
-    ```bash
-    ./gradlew testDebugUnitTest
-    ```
-    (Find HTML report in `app/build/reports/tests/testDebugUnitTest/index.html`)
-
-3.  **Instrumented Tests (Requires Connected Device/Emulator - via Android Studio):**
-    *   Navigate to the `app/src/androidTest/java` directory.
-    *   Ensure a device or emulator is running and recognized by ADB.
-    *   Right-click on a test file or the `java` directory.
-    *   Select "Run 'Tests in ...'".
-
-4.  **Instrumented Tests (via Command Line):**
-    ```bash
-    ./gradlew connectedDebugAndroidTest
-    ```
+4.  **Interaction:**
+    *   Ensure the Android app (or other sensor source) is configured to send data to the Python server's IP address and port (`DEVICE_MANAGER_LISTEN_HOST`, `DEVICE_MANAGER_LISTEN_WS_PORT`).
+    *   Interact with the system via the Flask API endpoints (e.g., using `curl`, Postman, or a custom frontend).
+    *   Check log files (`main_app.log`, `data_logs/*.log`) for activity and stored data.
 
 
