@@ -2,9 +2,10 @@ import asyncio
 import websockets
 import json
 import logging
+import os
 
 # Configure logging for better visibility
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
 logger = logging.getLogger(__name__)
 
 # Sensor event callback functions (remain the same, they just print)

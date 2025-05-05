@@ -30,6 +30,7 @@ import java.nio.ByteBuffer
 import java.util.*
 import com.google.gson.Gson
 import com.google.gson.JsonSyntaxException
+import java.util.concurrent.ConcurrentHashMap
 
 data class ServerInfo(val ipAddress: String, val port: Int)
 class GPS
@@ -69,6 +70,24 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     var isRunning = false
         private set
 
+    private val clients = ConcurrentHashMap<WebSocket, MutableSet<String>>() // Example: Map connection to requested sensor types
+
+    // --- Timestamp Offset Calculation ---
+    private var bootTimeEpochMs: Long = 0L
+    private var isTimestampOffsetInitialized = false
+
+    // Call this function once when the server starts or sensors are first needed
+    // Adjust placement based on actual app lifecycle (e.g., Service onCreate/onStartCommand)
+    private fun initializeTimestampOffset() {
+        if (!isTimestampOffsetInitialized) {
+            val elapsedRealtimeMs = android.os.SystemClock.elapsedRealtime()
+            val currentTimeMs = System.currentTimeMillis()
+            bootTimeEpochMs = currentTimeMs - elapsedRealtimeMs
+            isTimestampOffsetInitialized = true
+            Log.d("SensorWSServer", "Initialized boot time epoch offset: $bootTimeEpochMs ms")
+        }
+    }
+    // --- End Timestamp Offset ---
 
     companion object
     {
@@ -142,14 +161,37 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
             }
         }
 
-
+        // --- Initialize offset if not already done ---
+        // This ensures it's calculated before the first sensor event might arrive
+        // Adjust if initialization happens elsewhere reliably (e.g., Service start)
+        initializeTimestampOffset()
+        // ----------------------------------------------
     }
 
-
-    /**
-     * Helper method to handle multiple sensor request on single websocket connection
-     * this method is used in onOpen() method
-     */
+    // Add this function to debug the clients map
+    private fun updateClientMapForMultiSensorList(clientWebsocket: WebSocket, sensorList: List<Any>) {
+        // Extract any regular Sensor objects from the list
+        val sensors = sensorList.filterIsInstance<Sensor>()
+        
+        Log.d(TAG, "Updating clients map for ${sensors.size} standard sensors")
+        
+        // Make sure these sensors are in the clients map
+        if (sensors.isNotEmpty()) {
+            // Get or create the set of sensor types for this client
+            val subscribedTypes = clients.getOrPut(clientWebsocket) { mutableSetOf() }
+            
+            // Add each sensor's string type to the set
+            sensors.forEach { sensor ->
+                val sensorType = sensor.stringType
+                subscribedTypes.add(sensorType)
+                Log.d(TAG, "Added sensor type '$sensorType' to clients map for ${clientWebsocket.remoteSocketAddress}")
+            }
+            
+            Log.d(TAG, "Client now subscribed to ${subscribedTypes.size} sensor types: $subscribedTypes")
+        }
+    }
+    
+    // Now modify handleMultiSensorRequest to use this function
     private fun handleMultiSensorRequest(uri: Uri, clientWebsocket: WebSocket)
     {
         if (uri.getQueryParameter("types") == null)
@@ -227,6 +269,9 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         // For new requesting client, attach a tag of requested sensor list with client
         clientWebsocket.setAttachment(requestedSensorList)
         Log.i(TAG, "Attached ${requestedSensorList.size} sensors to client websocket")
+        
+        // Add this line here - after setting the attachment but before registering listeners
+        updateClientMapForMultiSensorList(clientWebsocket, requestedSensorList)
 
         // Register listeners for standard sensors
         val standardSensors = requestedSensorList.filterIsInstance<Sensor>()
@@ -242,6 +287,7 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         }
         
         notifyConnectionsChanged()
+        logClientSubscriptions()
     }
 
     /**
@@ -318,7 +364,15 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         clientWebsocket.setAttachment(requestedSensor)
         registerListenerForSensor(requestedSensor)
 
+        // For standard sensors (not network types), make sure to update clients map
+        if (!networkSensorManager.isNetworkSensor(paramType)) {
+            val subscribedTypes = clients.getOrPut(clientWebsocket) { mutableSetOf() }
+            subscribedTypes.add(requestedSensor.stringType)
+            Log.d(TAG, "Added sensor type '${requestedSensor.stringType}' to clients map for single sensor client ${clientWebsocket.remoteSocketAddress}")
+        }
+
         notifyConnectionsChanged()
+        logClientSubscriptions()
     }
 
     private fun registerListenerForSensor(sensor: Sensor)
@@ -430,6 +484,10 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
     override fun onClose(clientWebsocket: WebSocket, code: Int, reason: String?, remote: Boolean)
     {
         Log.i(TAG, "Closed " + clientWebsocket.remoteSocketAddress + " with exit code " + code + " additional info: " + reason)
+
+        // Make sure to remove this client from the clients map to prevent memory leaks
+        clients.remove(clientWebsocket)
+        Log.d(TAG, "Removed client from clients map")
 
         val tag = clientWebsocket.getAttachment<Any?>()
         when (tag)
@@ -601,6 +659,11 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         isRunning = true
         Log.i(TAG, "server started successfully $address")
         Log.i(TAG, "sampling rate $samplingRate")
+
+        // --- Initialize offset on server start ---
+        // This is another potential place if sensors are always active when server runs
+        initializeTimestampOffset()
+        // ----------------------------------------
     }
 
     @kotlin.Throws(InterruptedException::class)
@@ -744,45 +807,58 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
         }
     }
 
-    override fun onSensorChanged(sensorEvent: SensorEvent)
-    {
-        val sensor = sensorEvent.sensor
+    override fun onSensorChanged(sensorEvent: SensorEvent?) {
+        sensorEvent?.let {
+            val sensorTypeString = it.sensor.stringType ?: return // Get sensor type string
 
-        message.clear()
-        message["values"] = sensorEvent.values
-        message["accuracy"] = sensorEvent.accuracy
-        message["timestamp"] = sensorEvent.timestamp
+            // Add explicit DEBUG log for non-network sensors 
+            Log.d("SensorWSServer", "===> onSensorChanged called for sensor: $sensorTypeString")
 
-        // Find all clients that requested this specific sensor (single or multi)
-        val targetClients = connections.filter { ws ->
-            val attachment = ws.getAttachment<Any?>()
-            (attachment is Sensor && attachment == sensor) || (attachment is List<*> && (attachment as? List<*>)?.filterIsInstance<Sensor>()?.contains(sensor) == true)
-        }
-
-        // Send to clients that requested only this sensor
-        val singleSensorJson = gson.toJson(message) // Serialize once
-        targetClients.filter { it.getAttachment<Any?>() is Sensor }.forEach {
-            try {
-                 it.send(singleSensorJson as String)
-            } catch (e: WebsocketNotConnectedException) {
-                Log.w(TAG, "Attempted to send to a closed websocket (single): ${it.remoteSocketAddress}")
-            } catch (e: Exception) {
-                 Log.e(TAG, "Error sending sensor data (single)", e)
+            // --- Ensure timestamp offset is initialized ---
+            if (!isTimestampOffsetInitialized) {
+                Log.w("SensorWSServer", "Timestamp offset not initialized, attempting now.")
+                initializeTimestampOffset()
+                // If still not initialized after attempt, might need to skip/log error
+                if (!isTimestampOffsetInitialized) {
+                     Log.e("SensorWSServer", "Failed to initialize timestamp offset. Skipping event.")
+                     return
+                }
             }
-        }
+            // -------------------------------------------
 
-         // Send to clients that requested multiple sensors including this one
-         // Fix: Use stringType instead of name to ensure we have the full type path
-        message["type"] = sensor.stringType // Use stringType instead of name
-        val multiSensorJson = gson.toJson(message) // Serialize again with type
-        val multiSensorClients = targetClients.filter { it.getAttachment<Any?>() is List<*> }
-        multiSensorClients.forEach {
-            try {
-                it.send(multiSensorJson as String)
-            } catch (e: WebsocketNotConnectedException) {
-                Log.w(TAG, "Attempted to send to a closed websocket (multi): ${it.remoteSocketAddress}")
+            // Calculate epoch time in milliseconds
+            val eventTimestampEpochMs = bootTimeEpochMs + (it.timestamp / 1_000_000)
+
+            val message = mutableMapOf<String, Any>()
+            message["type"] = sensorTypeString
+            message["values"] = it.values // Keep as float array
+            message["accuracy"] = it.accuracy
+            // *** Use the calculated epoch milliseconds timestamp ***
+            message["timestamp"] = eventTimestampEpochMs
+            // Add the sensor name if available
+            message["name"] = it.sensor.name
+
+            val messageJson = gson.toJson(message)
+
+            // Add EXPLICIT logs showing we're sending data
+            var clientCount = 0
+            
+            // Send to clients subscribed to this sensor type
+            clients.forEach { (client, subscribedTypes) ->
+                if (subscribedTypes.contains(sensorTypeString) && client.isOpen) {
+                    try {
+                        client.send(messageJson)
+                        clientCount++
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending sensor data (multi)", e)
+                        Log.e("SensorWSServer", "Error sending message to client ${client.remoteSocketAddress}: ${e.message}")
+                        // Handle potential client disconnection or errors
+                    }
+                }
+            }
+            
+            // Only log every 100 messages to avoid flooding (most sensors fire very frequently)
+            if (System.currentTimeMillis() % 100L == 0L) {
+                Log.i(TAG, "===> Sent $sensorTypeString data to $clientCount clients")
             }
         }
     }
@@ -1022,6 +1098,37 @@ class SensorWebSocketServer(private val context: Context, address: InetSocketAdd
                 Log.e(TAG, "Failed to send network scan results to multi-sensor client", e)
             }
         }
+    }
+
+    // After a client successfully connects with sensors, log what it's subscribed to
+    private fun logClientSubscriptions() {
+        Log.d(TAG, "===== ACTIVE CLIENT SUBSCRIPTIONS =====")
+        var clientCount = 0
+        
+        clients.forEach { (client, subscribedTypes) ->
+            clientCount++
+            Log.d(TAG, "CLIENT #$clientCount: ${client.remoteSocketAddress}")
+            Log.d(TAG, "Subscribed to ${subscribedTypes.size} sensor types: $subscribedTypes")
+        }
+        
+        // Also log any clients with attachment-based subscriptions
+        connections.forEach { conn ->
+            val attachment = conn.getAttachment<Any?>()
+            when (attachment) {
+                is Sensor -> Log.d(TAG, "Client ${conn.remoteSocketAddress} has sensor attachment: ${attachment.stringType}")
+                is List<*> -> {
+                    val sensorTypes = attachment.filterIsInstance<Sensor>().map { it.stringType }
+                    val networkTypes = attachment.filterNot { it is Sensor }.map { it?.javaClass?.simpleName ?: "Unknown" }
+                    Log.d(TAG, "Client ${conn.remoteSocketAddress} has multi-sensor attachment: $sensorTypes + $networkTypes")
+                }
+                is GPS -> Log.d(TAG, "Client ${conn.remoteSocketAddress} has GPS attachment")
+                is WifiScanSensor -> Log.d(TAG, "Client ${conn.remoteSocketAddress} has WiFi scan attachment")
+                is BluetoothScanSensor -> Log.d(TAG, "Client ${conn.remoteSocketAddress} has Bluetooth scan attachment")
+                is NetworkScanSensor -> Log.d(TAG, "Client ${conn.remoteSocketAddress} has Network scan attachment")
+            }
+        }
+        
+        Log.d(TAG, "========================================")
     }
 
 }

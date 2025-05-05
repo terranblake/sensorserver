@@ -36,7 +36,7 @@ console_handler.setFormatter(log_formatter)
 server_log_handler = logging.FileHandler("server.log", mode='a')
 server_log_handler.setFormatter(log_formatter)
 
-logging.basicConfig(level=logging.INFO, handlers=[console_handler, server_log_handler])
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), handlers=[console_handler, server_log_handler])
 logger = logging.getLogger(__name__)
 
 # Configure loggers from sensor_logic to use files

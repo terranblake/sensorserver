@@ -2,9 +2,10 @@ import asyncio
 import aiohttp
 import json
 import logging
+import os
 
 # Configure logging for better visibility
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
 logger = logging.getLogger(__name__)
 
 async def discover_sensors(address: str) -> list[str]:

@@ -2,9 +2,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-
+import os
 # Configure basic logging for the module
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 from data_store import DataStore
@@ -41,22 +41,11 @@ class Collector:
         # Validate basic structure of raw data - Early exit
         raw_type = raw_data.get('type')
         raw_values = raw_data.get('values') # Note: GPS data doesn't use 'values'
-        raw_timestamp_str = raw_data.get('timestamp') # Use timestamp from raw data if available
+        raw_name = raw_data.get('name')  # Get sensor name if available
 
         if not raw_type:
             logger.warning(f"Received raw data missing 'type'. Skipping processing: {raw_data}")
             return
-
-        # Use the timestamp from the raw data if provided, otherwise generate current time
-        created_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        if raw_timestamp_str:
-            try:
-                # Attempt to parse the raw timestamp
-                datetime.fromisoformat(raw_timestamp_str.replace('Z', '+00:00'))
-                created_at = raw_timestamp_str # Use raw timestamp if valid
-            except ValueError:
-                logger.warning(f"Invalid timestamp format in raw data: {raw_timestamp_str}. Using current time.")
-
 
         # Dispatch to type-specific handler function
         data_points_to_log: List[Dict[str, Any]] = []
@@ -64,28 +53,29 @@ class Collector:
         # Handle sensors with 'values' list
         if raw_values is not None:
             if raw_type == 'android.sensor.pressure':
-                data_points_to_log = self._handle_pressure_data(raw_type, raw_values, created_at) # Pass raw_type
+                data_points_to_log = self._handle_pressure_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Pass raw_type
             elif raw_type in ['android.sensor.accelerometer', 'android.sensor.accelerometer_uncalibrated', 'android.sensor.linear_acceleration', 'android.sensor.gravity', 'android.sensor.magnetic_field']:
-                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_values, created_at)
+                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data))
             elif raw_type in ['android.sensor.gyroscope', 'android.sensor.gyroscope_uncalibrated']:
-                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_values, created_at) # Gyro is also a vector
+                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Gyro is also a vector
             elif raw_type in ['android.sensor.rotation_vector', 'android.sensor.game_rotation_vector', 'android.sensor.geomagnetic_rotation_vector', 'android.sensor.orientation']:
-                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_values, created_at) # Other vector/rotation sensors
+                 data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Other vector/rotation sensors
             elif raw_type == 'android.sensor.wifi_scan':
-                data_points_to_log = self._handle_wifi_scan_data(raw_values, created_at)
+                data_points_to_log = self._handle_wifi_scan_data(raw_name, raw_values)
             elif raw_type == 'android.sensor.bluetooth_scan':
-                data_points_to_log = self._handle_bluetooth_scan_data(raw_values, created_at)
+                data_points_to_log = self._handle_bluetooth_scan_data(raw_name, raw_values)
             elif raw_type == 'android.sensor.network_scan':
-                data_points_to_log = self._handle_network_scan_data(raw_values, created_at)
+                data_points_to_log = self._handle_network_scan_data(raw_name, raw_values)
+            elif raw_type in ['com.google.sensor.gyro_temperature', 'com.google.sensor.pressure_temp']:
+                data_points_to_log = self._handle_temperature_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data))
             # Add more elif blocks for other sensors with 'values' list
 
         # Handle sensors with a different structure (like GPS)
         elif raw_type == 'gps':
              # For GPS, the raw_data dict itself contains the data fields
-             data_points_to_log = self._handle_gps_data(raw_type, raw_data, created_at) # Pass raw_type
-
+             data_points_to_log = self._handle_gps_data(raw_type, raw_data, self._get_created_at(raw_data)) # Pass raw_type
         # Handle unsupported types
-        else:
+        if not data_points_to_log:
             logger.warning(f"Unsupported raw data type: {raw_type}. Skipping conversion.")
             # Optionally log the raw data with an 'unsupported' type if needed
             # data_points_to_log.append({
@@ -95,7 +85,6 @@ class Collector:
             #     'value': raw_data # Store raw data directly if needed
             # })
 
-
         # Log converted data points to the DataStore
         if data_points_to_log:
             logger.debug(f"Converted raw data to {len(data_points_to_log)} data points.")
@@ -103,6 +92,26 @@ class Collector:
                 self.data_store.set_data(dp, files=['raw_data'])
         else:
             logger.debug(f"No data points generated from raw data type: {raw_type}.")
+
+    def _get_created_at(self, raw_data: Dict[str, Any]) -> str:
+        """
+        Handles timestamp data from raw data.
+        """
+        raw_timestamp_str = raw_data.get('timestamp') # Use timestamp from raw data if available
+        formatted_timestamp = datetime.fromtimestamp(raw_timestamp_str / 1000).isoformat()
+
+        # Use the timestamp from the raw data if provided, otherwise generate current time
+        created_at = None
+        if formatted_timestamp:
+            try:
+                # Attempt to parse the raw timestamp
+                datetime.fromisoformat(formatted_timestamp.replace('Z', '+00:00'))
+                created_at = formatted_timestamp # Use raw timestamp if valid
+            except ValueError:
+                logger.warning(f"Invalid timestamp format in raw data: {formatted_timestamp}. Using current time.")
+
+        return created_at if created_at else datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
 
     def receive_inference_result(self, inference_result: Dict[str, Any]) -> None:
         """
@@ -138,7 +147,7 @@ class Collector:
              logger.warning("No data points generated from inference result for logging.")
 
 
-    def _handle_pressure_data(self, sensor_type: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+    def _handle_pressure_data(self, sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
         """Handles conversion for android.sensor.pressure data."""
         data_points: List[Dict[str, Any]] = []
 
@@ -155,7 +164,7 @@ class Collector:
         data_points.append({
             'created_at': created_at,
             'type': sensor_type, # Use the sensor type as the data point type
-            'key': None, # Set key to None for scalar sensors without instance ID in raw data
+            'key': raw_name, # Set key to None for scalar sensors without instance ID in raw data
             'value': float(pressure_value) # Ensure float type
         })
 
@@ -164,7 +173,7 @@ class Collector:
 
         return data_points
 
-    def _handle_vector_sensor_data(self, sensor_type: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+    def _handle_vector_sensor_data(self , sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
         """Handles conversion for vector-based sensor data (Accelerometer, Gyroscope, etc.)."""
         data_points: List[Dict[str, Any]] = []
 
@@ -188,7 +197,7 @@ class Collector:
                  data_points.append({
                      'created_at': created_at,
                      'type': f'{sensor_type}.{vector_keys[i]}', # e.g., 'android.sensor.accelerometer.x'
-                     'key': None, # Set key to None for vector components without instance ID in raw data
+                     'key': raw_name, # Set key to None for vector components without instance ID in raw data
                      'value': float(value)
                  })
              else:
@@ -209,7 +218,7 @@ class Collector:
                         data_points.append({
                             'created_at': created_at,
                             'type': f'{sensor_type}.{bias_keys[i]}',
-                            'key': None, # Set key to None for bias components
+                            'key': raw_name, # Set key to None for bias components
                             'value': float(bias_value)
                         })
                     else:
@@ -226,7 +235,7 @@ class Collector:
                       data_points.append({
                           'created_at': created_at,
                           'type': f'{sensor_type}.scalar',
-                          'key': None, # Set key to None for scalar component
+                          'key': raw_name, # Set key to None for scalar component
                           'value': float(scalar_value)
                       })
                  else:
@@ -240,7 +249,7 @@ class Collector:
                            data_points.append({
                                'created_at': created_at,
                                'type': f'{sensor_type}.accuracy',
-                               'key': None, # Set key to None for accuracy
+                               'key': raw_name, # Set key to None for accuracy
                                'value': float(accuracy_value)
                            })
                       else:
@@ -268,7 +277,7 @@ class Collector:
         return data_points
 
 
-    def _handle_gps_data(self, sensor_type: str, raw_data: Dict[str, Any], created_at: str) -> List[Dict[str, Any]]:
+    def _handle_gps_data(self, sensor_type: str, raw_name: str, raw_data: Dict[str, Any], created_at: str) -> List[Dict[str, Any]]:
         """Handles conversion for gps data."""
         data_points: List[Dict[str, Any]] = []
 
@@ -316,7 +325,7 @@ class Collector:
                 data_points.append({
                     'created_at': created_at,
                     'type': dp_type, # e.g., 'android.sensor.gps.latitude'
-                    'key': None, # Set key to None for GPS fields without instance ID in raw data
+                    'key': raw_name, # Set key to None for GPS fields without instance ID in raw data
                     'value': value
                 })
             # No warning for missing optional fields, as some might not always be present
@@ -327,7 +336,7 @@ class Collector:
         return data_points
 
 
-    def _handle_wifi_scan_data(self, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+    def _handle_wifi_scan_data(self, _raw_name: str, raw_values: Any) -> List[Dict[str, Any]]:
         """Handles conversion for android.sensor.wifi_scan data."""
         data_points: List[Dict[str, Any]] = []
 
@@ -344,6 +353,8 @@ class Collector:
             net_id = network_data.get('bssid')
             if net_id is None:
                 net_id = network_data.get('id') # Try 'id' if 'bssid' is missing
+
+            created_at = self._get_created_at(network_data)
 
             net_rssi = network_data.get('rssi') # Signal strength
             net_frequency = network_data.get('frequency')
@@ -391,7 +402,7 @@ class Collector:
 
         return data_points
 
-    def _handle_bluetooth_scan_data(self, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+    def _handle_bluetooth_scan_data(self, _raw_name: str, raw_values: Any) -> List[Dict[str, Any]]:
         """Handles conversion for android.sensor.bluetooth_scan data."""
         data_points: List[Dict[str, Any]] = []
 
@@ -409,8 +420,8 @@ class Collector:
             if net_id is None:
                 net_id = device_data.get('id') # Try 'id' if 'address' is missing
 
+            created_at = self._get_created_at(device_data)
             net_rssi = device_data.get('rssi') # Signal strength
-            net_name = device_data.get('name') # Device name
 
             if not net_id or net_rssi is None:
                  # Updated warning to reflect keys being checked
@@ -428,18 +439,10 @@ class Collector:
             else:
                  logger.warning(f"Non-numeric RSSI for bluetooth {net_id}: {net_rssi}. Skipping RSSI data point.")
 
-            # Log Name as a data point (if available)
-            if net_name is not None:
-                 data_points.append({
-                     'created_at': created_at,
-                     'type': 'android.sensor.bluetooth_scan.name',
-                     'key': str(net_id), # Use ID as key
-                     'value': str(net_name)
-                 })
 
         return data_points
 
-    def _handle_network_scan_data(self, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+    def _handle_network_scan_data(self, _raw_name: str, raw_values: Any) -> List[Dict[str, Any]]:
         """Handles conversion for android.sensor.network_scan data (combined WiFi/Bluetooth)."""
         data_points: List[Dict[str, Any]] = []
 
@@ -452,15 +455,38 @@ class Collector:
 
         # Process wifi_results (list of dicts) - call the specific handler
         if isinstance(wifi_results, list):
-             data_points.extend(self._handle_wifi_scan_data(wifi_results, created_at))
+             data_points.extend(self._handle_wifi_scan_data(_raw_name, wifi_results))
         else:
              logger.warning(f"network_scan 'wifiResults' is not a list: {wifi_results}. Skipping WiFi results.")
 
         # Process bluetooth_results (list of dicts) - call the specific handler
         if isinstance(bluetooth_results, list):
-             data_points.extend(self._handle_bluetooth_scan_data(bluetooth_results, created_at))
+             data_points.extend(self._handle_bluetooth_scan_data(_raw_name, bluetooth_results))
         else:
              logger.warning(f"network_scan 'bluetoothResults' is not a list: {bluetooth_results}. Skipping Bluetooth results.")
+
+        return data_points
+
+    def _handle_temperature_data(self, sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
+        """Handles conversion for temperature data from gyro and pressure sensors."""
+        data_points: List[Dict[str, Any]] = []
+
+        if not isinstance(raw_values, list) or not raw_values:
+            logger.warning(f"Temperature data '{sensor_type}' 'values' is not a non-empty list: {raw_values}. Skipping data point.")
+            return data_points # Early exit
+
+        # Temperature value is the first element in the values array
+        temp_value = raw_values[0]
+        if not isinstance(temp_value, (int, float)):
+             logger.warning(f"Temperature value is not numeric: {temp_value}. Skipping data point.")
+             return data_points # Early exit
+
+        data_points.append({
+            'created_at': created_at,
+            'type': sensor_type,
+            'key': raw_name, # Use the sensor name as the key
+            'value': float(temp_value) # Ensure float type
+        })
 
         return data_points
 
@@ -478,7 +504,6 @@ class Collector:
         created_at = inference_result.get('created_at', datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
         inference_name = inference_result.get('inference_name', 'unknown_inference')
         inference_type = inference_result.get('inference_type', 'unknown_type')
-
 
         # Log overall prediction and confidence (to raw_data and inference_data)
         overall_prediction = inference_result.get('overall_prediction', {})

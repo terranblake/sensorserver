@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta # Import timedelta
 from typing import List, Dict, Any, Optional
 
 # Configure basic logging for the module
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class DataStore:

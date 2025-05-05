@@ -7,7 +7,7 @@ import statistics # For calculating median and standard deviation
 import zlib # For compressing raw data reference (simple example)
 
 # Configure basic logging for the module
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Assume DataStore class is available (either imported or in the same project)

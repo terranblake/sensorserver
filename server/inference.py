@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 # Configure basic logging for the module
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Assume DataStore class is available (either imported or in the same project)
@@ -359,7 +359,7 @@ class InferenceModule:
         # The sensor_weights from inference_config['sensor_weights'] should be applied.
         # The output should include a total_score and a confidence_score (0-1).
         # path_contributions should detail how each included_path contributed.
-        
+
         # Dummy implementation returning placeholder values
         total_score = 0.0
         confidence_score = 0.0

@@ -65,7 +65,7 @@ server_log_handler.setFormatter(log_formatter)
 
 # Clear default handlers from root logger if basicConfig was called elsewhere
 logging.getLogger().handlers = []
-logging.basicConfig(level=logging.INFO, handlers=[console_handler, server_log_handler])
+logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), handlers=[console_handler, server_log_handler])
 logger = logging.getLogger(__name__)
 
 # Note: DataStore, Collector, FingerprintingModule, and InferenceModule
