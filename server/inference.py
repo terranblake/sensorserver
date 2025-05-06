@@ -133,9 +133,11 @@ class InferenceModule:
 
         # Ensure required properties are present (basic check)
         required_props = ['inference_type', 'data_point_types', 'included_paths', 'sensor_weights', 'window_duration_seconds', 'confidence_threshold', 'significant_difference']
-        if not all(prop in inference_config for prop in required_props):
-             logger.error(f"Inference configuration '{config_name}' is missing required properties. Cannot save.")
-             return
+        missing_props = [prop for prop in required_props if prop not in inference_config]
+        if missing_props:
+             error_msg = f"Inference configuration '{config_name}' is missing required properties: {', '.join(missing_props)}. Cannot save."
+             logger.error(error_msg)
+             raise ValueError(error_msg) # Raise exception
 
         # Add/update timestamps
         now_str = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -162,14 +164,17 @@ class InferenceModule:
 
         # Ensure the updated configuration has the correct name - Early exit if mismatch
         if inference_config.get('name') != config_name:
-             logger.warning(f"Updated inference configuration object name '{inference_config.get('name')}' does not match target name '{config_name}'. Cannot update with mismatched name.")
-             return
+             error_msg = f"Updated inference configuration object name '{inference_config.get('name')}' does not match target name '{config_name}'. Cannot update with mismatched name."
+             logger.warning(error_msg)
+             raise ValueError(error_msg) # Raise exception
 
         # Ensure required properties are present (basic check)
         required_props = ['inference_type', 'data_point_types', 'included_paths', 'sensor_weights', 'window_duration_seconds', 'confidence_threshold', 'significant_difference']
-        if not all(prop in inference_config for prop in required_props):
-             logger.error(f"Inference configuration '{config_name}' is missing required properties. Cannot update.")
-             return
+        missing_props = [prop for prop in required_props if prop not in inference_config]
+        if missing_props:
+             error_msg = f"Inference configuration '{config_name}' is missing required properties: {', '.join(missing_props)}. Cannot update."
+             logger.error(error_msg)
+             raise ValueError(error_msg) # Raise exception
 
         # Update the updated_at timestamp
         inference_config['updated_at'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')

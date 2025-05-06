@@ -18,6 +18,10 @@ class State {
         };
         // Maximum number of real-time data points to keep in memory
         this.maxRealtimeDataPoints = 200;
+        this.initialized = {
+            inferenceConfigs: false,
+            // Add flags for other data types as needed
+        };
     }
 
     /**
@@ -87,38 +91,34 @@ class State {
     }
 
     /**
-     * Initialize all state data from API
+     * Initialize the state by fetching initial data
      */
     async initialize() {
+        console.log("State Manager: Initializing...");
+        await this.refreshInferenceConfigs();
+        // Fetch other initial states here
+        console.log("State Manager: Initialization complete.");
+    }
+
+    /**
+     * Fetch inference configurations and update state
+     */
+    async refreshInferenceConfigs() {
+        if (this.initialized.inferenceConfigs) {
+             console.log("State Manager: Skipping refresh for already initialized inferenceConfigs.");
+             // Optionally allow forced refresh: refreshInferenceConfigs(force = false)
+             // if (!force) return;
+        }
         try {
-            // Fetch sensor state
-            const stateData = await api.fetchStateData();
-            this.update('sensorState', stateData);
-            
-            // If state data includes location scores, update them
-            if (stateData.location_scores) {
-                this.update('locationScores', stateData.location_scores);
-            }
-            
-            // Fetch calibrated fingerprints
-            const fingerprints = await api.fetchCalibratedFingerprints();
-            this.update('calibratedFingerprints', fingerprints.calibrated_fingerprints || []);
-            
-            // Fetch inference configurations
+            console.log("State Manager: Fetching inference configurations...");
             const configs = await api.fetchInferenceConfigurations();
             this.update('inferenceConfigs', configs.inference_configurations || []);
-            
-            // Connect WebSocket for real-time updates
-            api.connectWebSocket();
-            
-            // Register WebSocket callbacks
-            api.onWebSocketEvent('data_point', (data) => {
-                this.addRealtimeDataPoint(data);
-            });
-            
-            console.log('State initialized successfully');
+            this.initialized.inferenceConfigs = true; // Mark as initialized
+             console.log("State Manager: Inference configurations fetched and state updated.");
         } catch (error) {
-            console.error('Error initializing state:', error);
+            console.error('Error fetching inference configurations:', error);
+            // Optionally notify subscribers about the error
+            this.notify('error', { source: 'inferenceConfigs', error });
         }
     }
 

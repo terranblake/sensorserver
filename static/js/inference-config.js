@@ -63,6 +63,10 @@ class InferenceConfigManager {
             this.elements.runConfigButton.addEventListener('click', this.runInference.bind(this));
         }
         
+        if (this.elements.newButton) {
+            this.elements.newButton.addEventListener('click', this.handleNewConfigClick.bind(this));
+        }
+        
         // Subscribe to state changes
         state.subscribe('inferenceConfigs', this.updateConfigList.bind(this));
         
@@ -354,6 +358,19 @@ class InferenceConfigManager {
             parseFloat(elements.windowDurationInput.value) : 0;
         config.confidence_threshold = elements.confidenceThresholdInput ? 
             parseFloat(elements.confidenceThresholdInput.value) : 0;
+        // Add collection for significant_difference
+        config.significant_difference = elements.significantDifferenceInput ? 
+            parseFloat(elements.significantDifferenceInput.value) : null; // Or a default like 1.5
+
+        // Add collection for other optional parameters
+        config.min_std_dev_rssi = elements.minStdDevRssiInput && elements.minStdDevRssiInput.value ? 
+            parseFloat(elements.minStdDevRssiInput.value) : null; // Use null if empty
+        config.base_missing_network_penalty_diff = elements.baseMissingPenaltyInput && elements.baseMissingPenaltyInput.value ?
+            parseFloat(elements.baseMissingPenaltyInput.value) : null; // Use null if empty
+        config.min_std_dev_pressure = elements.minStdDevPressureInput && elements.minStdDevPressureInput.value ?
+            parseFloat(elements.minStdDevPressureInput.value) : null; // Use null if empty
+        config.confidence_scaling_factor = elements.confidenceScalingInput && elements.confidenceScalingInput.value ?
+            parseFloat(elements.confidenceScalingInput.value) : null; // Use null if empty
         
         // Get array fields from newline-separated strings
         if (elements.dataPointTypesInput) {
@@ -418,24 +435,24 @@ class InferenceConfigManager {
             }
             
             // Check if editing or creating new
+            let result;
             if (this.isEditing) {
                 // Update existing config
-                const result = await api.updateInferenceConfiguration(config.name, config);
+                result = await api.updateInferenceConfiguration(config.name, config);
                 console.log('Config updated:', result);
-                alert(`Configuration "${config.name}" updated successfully.`);
+                // alert(`Configuration "${config.name}" updated successfully.`); // Replaced by status display
             } else {
                 // Save as new config
-                const result = await api.saveInferenceConfiguration(config);
+                result = await api.saveInferenceConfiguration(config);
                 console.log('Config saved:', result);
-                alert(`Configuration "${config.name}" saved successfully.`);
+                // alert(`Configuration "${config.name}" saved successfully.`); // Replaced by status display
             }
+
+            // Display success status
+            this.showStatusMessage(`Configuration '${config.name}' ${this.isEditing ? 'updated' : 'saved'} successfully.`, 'success');
             
-            // Refresh inference configs
-            const configs = await api.fetchInferenceConfigurations();
-            state.update('inferenceConfigs', configs.inference_configurations || []);
-            
-            // Reset form for new config
-            this.resetForm();
+            // Refresh inference configs from the state (which should trigger updateConfigList)
+            state.refreshInferenceConfigs(); // Assuming state.js has this method
         } catch (error) {
             console.error('Error saving config:', error);
             
@@ -444,7 +461,30 @@ class InferenceConfigManager {
                 this.elements.configError.style.display = 'block';
             }
             
-            alert(`Error saving configuration: ${error.message}`);
+            // alert(`Error saving configuration: ${error.message}`); // Replaced by status display
+        }
+    }
+
+    /**
+     * Display a status message below the form
+     * @param {string} message - Message to display
+     * @param {'success'|'error'} type - Type of message
+     */
+    showStatusMessage(message, type = 'error') {
+        if (this.elements.statusDisplay && type === 'success') {
+            this.elements.statusDisplay.textContent = message;
+            this.elements.statusDisplay.className = 'text-success mt-2';
+            this.elements.statusDisplay.style.display = 'block';
+            if (this.elements.configError) this.elements.configError.style.display = 'none';
+            // Hide success message after a few seconds
+            setTimeout(() => {
+                 if (this.elements.statusDisplay) this.elements.statusDisplay.style.display = 'none';
+            }, 5000);
+        } else if (this.elements.configError && type === 'error') {
+            this.elements.configError.textContent = message;
+            this.elements.configError.className = 'text-danger mt-2';
+            this.elements.configError.style.display = 'block';
+             if (this.elements.statusDisplay) this.elements.statusDisplay.style.display = 'none';
         }
     }
 
@@ -476,6 +516,35 @@ class InferenceConfigManager {
         
         // Hide errors
         if (elements.configError) elements.configError.style.display = 'none';
+    }
+
+    /**
+     * Handle click on the 'New Configuration' button
+     */
+    handleNewConfigClick() {
+        console.log("handleNewConfigClick called");
+        this.resetForm(); // Clear fields and set isEditing = false
+
+        // Ensure form is visible and prompt is hidden
+        if (this.elements.configForm) {
+            this.elements.configForm.style.display = 'block';
+        }
+        if (this.elements.selectPrompt) {
+            this.elements.selectPrompt.style.display = 'none';
+        }
+        
+        // Explicitly set button text and name field state (although resetForm should handle it)
+        if (this.elements.saveConfigButton) {
+            this.elements.saveConfigButton.textContent = 'Save New Configuration';
+        }
+        if (this.elements.configNameInput) {
+            this.elements.configNameInput.disabled = false;
+        }
+
+        // Set hidden input to indicate new (optional, if using it)
+        if (this.elements.isNewInput) {
+            this.elements.isNewInput.value = 'true';
+        }
     }
 
     /**

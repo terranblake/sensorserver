@@ -319,6 +319,9 @@ def api_save_inference_config():
         new_config = data.copy()
         inference_module.save_inference_configuration(new_config)
         return jsonify({"status": "saved", "config_name": config_name}), 201
+    except ValueError as e: # Catch specific validation errors
+        logger.warning(f"Validation error saving inference configuration '{config_name}': {e}")
+        return jsonify({"error": str(e)}), 400 # Return 400 Bad Request
     except Exception as e:
         logger.error(f"Error saving inference configuration: {e}", exc_info=True)
         return jsonify({"error": "Internal server error"}), 500
@@ -343,6 +346,9 @@ def api_update_inference_config(config_name):
         updated_config = data.copy()
         inference_module.update_inference_configuration(config_name, updated_config)
         return jsonify({"status": "updated", "config_name": config_name}), 200
+    except ValueError as e: # Catch specific validation errors
+        logger.warning(f"Validation error updating inference configuration '{config_name}': {e}")
+        return jsonify({"error": str(e)}), 400 # Return 400 Bad Request
     except Exception as e:
         logger.error(f"Error updating inference configuration '{config_name}': {e}", exc_info=True)
         return jsonify({"error": "Internal server error"}), 500
