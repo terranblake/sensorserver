@@ -374,6 +374,34 @@ class DeviceManager:
 
         logger.info("DeviceManager servers and clients stopped.")
 
+    def get_device_details(self) -> Optional[Dict[str, Any]]:
+        """Returns stored device info (name/model) and current status."""
+        # Use getattr to safely access device_info, defaulting to empty dict
+        device_info_dict = getattr(self, 'device_info', {})
+        
+        details = {
+            "ip_address": self.device_host,
+            "name": device_info_dict.get('name'),
+            "model": device_info_dict.get('model'),
+            "status": "unknown" # Default
+        }
+        
+        # Determine status based on the websocket client state
+        client = self._device_websocket_client
+        if client and isinstance(client, websockets.WebSocketClientProtocol):
+            # Check standard attributes for websockets client protocol
+            if client.open:
+                details['status'] = 'connected'
+            elif client.closed:
+                 details['status'] = 'disconnected'
+            else:
+                 # It might be connecting or closing, treat as unknown/disconnected for simplicity
+                 details['status'] = 'disconnected' 
+        else:
+             # No valid client object exists
+             details['status'] = 'disconnected'
+             
+        return details
 
     def push_realtime_update(self, data: Dict[str, Any]) -> None:
         """
