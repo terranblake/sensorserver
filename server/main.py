@@ -15,6 +15,7 @@ from aiohttp import web # Specific import for aiohttp web components
 from urllib.parse import urlencode # Needed for URL encoding
 from collections import deque # Added for efficiently reading last N lines
 import re # Added for regular expression operations
+from typing import Optional # For type hinting
 
 # --- Import Core Modules ---
 # Assume these files are in the same directory or accessible via Python path
@@ -160,15 +161,61 @@ def _background_auto_logger(duration_seconds: int):
 # --- Flask App Setup ---
 app = Flask(__name__, static_folder='../static')
 
-# --- Background Tasks / Threads ---
-# This section will contain background tasks like:
-# 1. The DeviceManager running the network servers.
-# 2. A task that periodically triggers inference runs.
-# 3. A task that periodically generates the "current fingerprint".
+# --- Helper function for background inference task ---
+# Place this somewhere before the Flask routes in main.py
+def _run_inference_background(app_context, config_name, current_time_str, completion_callback):
+    """Runs inference in background and calls callback on completion."""
+    with app_context: # Use app context for potential Flask-related operations if needed later
+        logger = logging.getLogger(__name__) # Get logger within the context
+        try:
+            # Assuming inference_module is globally accessible or passed differently
+            # If not global, app context might help access app.config['INFERENCE_MODULE'] if stored there
+            # Make sure inference_module is accessible here
+            # If it's only defined in if __name__ == '__main__', it won't be accessible here
+            # Consider storing it in app.config as well
+            inference_module = app.config.get('INFERENCE_MODULE') 
+            if inference_module:
+                inference_module.run_inference(config_name, current_time_str)
+                logger.info(f"Background inference run for '{config_name}' completed successfully.")
+                if completion_callback:
+                    completion_callback(success=True, config_name=config_name, error=None)
+            else:
+                 logger.error(f"InferenceModule not found in app config during background task for '{config_name}'")
+                 if completion_callback:
+                     completion_callback(success=False, config_name=config_name, error="InferenceModule not configured")
+        except Exception as e:
+            logger.error(f"Error during background inference run for '{config_name}': {e}", exc_info=True)
+            if completion_callback:
+                completion_callback(success=False, config_name=config_name, error=str(e))
 
-
-# Removed placeholder periodic inference task function
-# Removed placeholder periodic current fingerprint generation task function
+# --- Callback function for WebSocket push ---
+# Place this before the Flask routes in main.py
+def _inference_completion_notify(success: bool, config_name: str, error: Optional[str]):
+    """Pushes a notification to the frontend via WebSocket."""
+    logger.info(f"Inference completed. Success: {success}, Config: {config_name}, Error: {error}")
+    try:
+        # Access DeviceManager stored in app config
+        device_manager = app.config.get('DEVICE_MANAGER')
+        if device_manager:
+            message_data = {
+                "type": "inference_complete",
+                "config_name": config_name,
+                "success": success,
+                "error": error
+            }
+            # Assuming DeviceManager has push_realtime_update method accessible
+            # Use run_coroutine_threadsafe to schedule the push on the DM's loop
+            if hasattr(device_manager, '_loop') and device_manager._loop:
+                 future = asyncio.run_coroutine_threadsafe(device_manager._push_data_to_frontend(message_data), device_manager._loop)
+                 # Optionally wait for future result with timeout, or just schedule and move on
+                 # future.result(timeout=5) # Example: wait up to 5 seconds
+                 logger.info(f"Scheduled inference_complete notification for {config_name}")
+            else:
+                 logger.warning("Cannot send inference_complete WS notification: DeviceManager loop not found.")
+        else:
+            logger.warning("DeviceManager instance not found in app config. Cannot send WS notification.")
+    except Exception as e:
+        logger.error(f"Error sending inference completion notification for {config_name}: {e}", exc_info=True)
 
 
 # --- Flask Routes ---
@@ -356,16 +403,42 @@ def api_update_inference_config(config_name):
 @app.route('/api/inference/run/<string:config_name>', methods=['POST'])
 def api_run_inference(config_name):
     """API endpoint to trigger an inference run for a specific configuration."""
-    # Get current time for the inference window end
+    # --- Moved Check to the Top ---
+    logger.info(f"Checking app.config keys at START of api_run_inference: {list(app.config.keys())}") # DEBUG LOG
+    if 'INFERENCE_MODULE' not in app.config:
+         logger.error("InferenceModule not found in app configuration at START of route.")
+         # Return 500 immediately if the module isn't configured
+         return jsonify({"error": "Inference module not configured on server (checked at start)"}), 500
+    # --- End Moved Check ---
+
     current_time_str = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    logger.info(f"Received request to run inference for '{config_name}' at {current_time_str}")
 
     try:
-        # The run_inference method logs results internally to the DataStore
-        inference_module.run_inference(config_name, current_time_str)
-        return jsonify({"status": "inference run triggered", "config_name": config_name, "timestamp": current_time_str}), 200
+        # Ensure inference_module is available (check app.config)
+        # logger.info(f"Checking app.config keys before inference run: {list(app.config.keys())}") # DEBUG LOG MOVED
+        # if 'INFERENCE_MODULE' not in app.config: # CHECK MOVED
+        #     logger.error("InferenceModule not found in app configuration.")
+        #     return jsonify({"error": "Inference module not configured on server"}), 500
+        inference_module = app.config['INFERENCE_MODULE'] # Can access directly now
+             
+        # Start inference in a background thread
+        inference_thread = threading.Thread(
+            target=_run_inference_background,
+            # Pass app context for the background thread
+            args=(app.app_context(), config_name, current_time_str, _inference_completion_notify),
+            name=f"InferenceThread-{config_name}",
+            daemon=True
+        )
+        inference_thread.start()
+
+        logger.info(f"Background inference thread started for '{config_name}'.")
+        # Return 202 Accepted immediately
+        return jsonify({"status": "inference run accepted", "config_name": config_name, "timestamp": current_time_str}), 202
     except Exception as e:
-        logger.error(f"Error triggering inference run for '{config_name}': {e}", exc_info=True)
-        return jsonify({"error": "Internal server error"}), 500
+        # This catches errors during thread *creation*, not execution
+        logger.error(f"Error starting inference thread for '{config_name}': {e}", exc_info=True)
+        return jsonify({"error": "Failed to start inference task"}), 500
 
 @app.route('/api/inference/history/<string:config_name>', methods=['GET'])
 def api_get_inference_history(config_name):
@@ -835,6 +908,7 @@ if __name__ == '__main__':
     
     # Store the instance in app config for access from routes
     app.config['DEVICE_MANAGER'] = device_manager
+    logger.info(f"DEVICE_MANAGER added to app.config: {'DEVICE_MANAGER' in app.config}") # ADDED LOG
 
     # Start the DeviceManager thread
     device_manager_thread = threading.Thread(
@@ -846,5 +920,14 @@ if __name__ == '__main__':
     device_manager_thread.start()
     logger.info("Device manager thread started.")
 
+    # --- Store Modules in App Config --- 
+    app.config['DATA_STORE'] = data_store # If needed by routes/bg tasks
+    app.config['COLLECTOR'] = collector
+    app.config['INFERENCE_MODULE'] = inference_module # Needed by background task
+    logger.info(f"INFERENCE_MODULE added to app.config: {'INFERENCE_MODULE' in app.config}") # ADDED LOG
+    app.config['FINGERPRINTING_MODULE'] = fingerprinting_module
+    logger.info(f"FINGERPRINTING_MODULE added to app.config: {'FINGERPRINTING_MODULE' in app.config}") # ADDED LOG
+
+    logger.info("Core modules instantiated and wired.")
     logger.info(f"Starting Flask web server on {FLASK_HOST}:{FLASK_PORT}...")
     app.run(host=FLASK_HOST, port=FLASK_PORT, debug=True, use_reloader=False)

@@ -72,6 +72,9 @@ class InferenceConfigManager {
         
         // Initialize state
         state.initialize();
+
+        // Register listener for inference completion events
+        api.onWebSocketEvent('inference_complete', this.handleInferenceCompletion.bind(this));
     }
 
     /**
@@ -563,15 +566,46 @@ class InferenceConfigManager {
         }
         
         try {
-            // Call API to run inference
+            // Call API to trigger background inference run
             const result = await api.runInference(configName);
-            console.log('Inference run triggered:', result);
+            console.log('Inference run accepted:', result);
             
-            // Show success message
-            alert(`Inference run triggered for configuration "${configName}". Check the logs for results.`);
+            // Show status message indicating acceptance
+            this.showStatusMessage(`Inference run accepted for configuration "${configName}".`, 'success');
+            
+            // Clear previous errors
+            if(this.elements.configError) this.elements.configError.style.display = 'none';
+            
         } catch (error) {
-            console.error('Error running inference:', error);
-            alert(`Error running inference: ${error.message}`);
+            console.error('Error triggering inference run:', error);
+            this.showStatusMessage(`Error triggering inference: ${error.message}`, 'error');
+        }
+    }
+
+    /**
+     * Handle incoming inference completion WebSocket messages
+     * @param {object} eventData - Data from the WebSocket message
+     */
+    handleInferenceCompletion(eventData) {
+        console.log("Received inference_complete event:", eventData);
+        const { config_name, success, error } = eventData;
+
+        // Log values being compared
+        console.log(`Comparing event config_name: '${config_name}' with this.currentConfig?.name: '${this.currentConfig?.name}'`);
+
+        // Optional: Show a persistent status update or notification?
+        // For now, just log it and refresh if the completed run matches the current view
+
+        if (this.currentConfig && this.currentConfig.name === config_name) {
+            console.log(`Inference completed for currently viewed config '${config_name}'. Refreshing runs tab.`);
+            this.fetchAndRenderRunHistory(config_name);
+            
+            // Optionally show a success/error message based on the event data
+            if (!success) {
+                this.showStatusMessage(`Background inference run for '${config_name}' failed: ${error || 'Unknown error'}`, 'error');
+            }
+        } else {
+             console.log(`Inference completed for config '${config_name}', which is not currently viewed.`);
         }
     }
 }

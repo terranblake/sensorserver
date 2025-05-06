@@ -12,7 +12,8 @@ class API {
             'data_point': [],
             'error': [],
             'open': [],
-            'close': []
+            'close': [],
+            'inference_complete': []
         };
     }
 

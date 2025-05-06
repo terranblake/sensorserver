@@ -156,16 +156,11 @@ class FingerprintingModule:
         # Extract necessary config parameters
         window_duration = config.get('window_duration_seconds', 30) # Default 30s
         data_point_types_to_fetch = config.get('data_point_types', [])
-        included_paths = config.get('included_paths', [])
         
         if not data_point_types_to_fetch:
             logger.warning(f"Inference config '{inference_config_name}' has no 'data_point_types'. Cannot fetch data.")
             # Proceed to generate fingerprint with empty stats if no types specified
             
-        if not included_paths:
-            logger.warning(f"Inference config '{inference_config_name}' has no 'included_paths'. Statistics will be empty.")
-            # Proceed, but stats object will remain empty
-
         # Calculate start time
         try:
             end_dt = datetime.fromisoformat(ended_at.replace('Z', '+00:00'))
@@ -175,14 +170,8 @@ class FingerprintingModule:
             logger.error(f"Invalid ended_at timestamp format '{ended_at}': {e}")
             return None
             
-        # 2. Initialize Statistics Dictionary
+        # 2. Initialize Statistics Dictionary - NOW EMPTY
         statistics = {}
-        for path in included_paths:
-            statistics[path] = {
-                'median_value': None,
-                'std_dev_value': None,
-                'num_samples': 0
-            }
             
         # 3. Fetch Data Points (only if types are specified)
         all_data_points = []
@@ -206,16 +195,16 @@ class FingerprintingModule:
             if dp.get('key') is not None:
                 path = f"{path}.{dp['key']}"
             
-            # Only process paths that are included in the config
-            if path in included_paths:
-                value = dp.get('value')
-                # Ensure value is numeric for calculations
-                if isinstance(value, (int, float)):
-                    if path not in grouped_data:
-                        grouped_data[path] = []
-                    grouped_data[path].append(float(value))
-                else:
-                    logger.warning(f"Skipping non-numeric value for path '{path}': {value}")
+            # Check if the BASE TYPE of the data point is in included_paths
+            # The DataStore query already filters by data_point_types_to_fetch
+            # base_type = dp['type']
+            # if base_type in included_paths: # <-- REMOVED CHECK
+            value = dp.get('value')
+            # Ensure value is numeric for calculations
+            if isinstance(value, (int, float)):
+                if path not in grouped_data:
+                    grouped_data[path] = []
+                grouped_data[path].append(float(value))
 
         # 5. Update Statistics Dictionary with Calculated Values
         for path, values in grouped_data.items():
@@ -224,7 +213,7 @@ class FingerprintingModule:
                 median_value = np.median(values)
                 std_dev_value = np.std(values)
                 
-                # Update the pre-initialized entry
+                # ADD the path to statistics dynamically
                 statistics[path] = {
                     'median_value': median_value,
                     'std_dev_value': std_dev_value,
@@ -254,7 +243,7 @@ class FingerprintingModule:
                 'ended_at': ended_at,
                 'window_duration_seconds': window_duration,
                 'data_point_types': data_point_types_to_fetch, # Record types used for fetching
-                'included_paths': included_paths # Record paths used for stats
+                # 'included_paths': included_paths # REMOVED included_paths
             }
         }
         
