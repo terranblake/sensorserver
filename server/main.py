@@ -513,111 +513,6 @@ def get_state_data():
     # Combine relevant state information for the frontend
     logger.debug("Fetching state data for frontend...")
     try:
-        now = datetime.now(timezone.utc)
-        iso_now = now.isoformat().replace('+00:00', 'Z')
-        # Define time windows (adjust as needed)
-        short_window_start = (now - timedelta(seconds=10)).isoformat().replace('+00:00', 'Z')
-        medium_window_start = (now - timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
-
-        # --- Fetch Latest Data Points --- 
-        # Fetch latest prediction
-        # latest_prediction_dps = data_store.get_data(
-        #     types=['inference.location.prediction'], 
-        #     started_at=medium_window_start, 
-        #     ended_at=iso_now, 
-        #     limit=1
-        # )
-        # latest_prediction = latest_prediction_dps[0] if latest_prediction_dps else None
-
-        # # Fetch latest location scores (all scores within the last minute)
-        # # Assuming scores are stored like: type='inference.location.confidence', key='location_name', value=score
-        # score_dps = data_store.get_data(
-        #      types=['inference.location.confidence'], 
-        #      started_at=medium_window_start, 
-        #      ended_at=iso_now,
-        #      # No limit - we want all recent scores to find the latest for each key
-        # )
-        # # Process scores: get the latest score for each location key
-        # latest_scores_map = {}
-        # if score_dps:
-        #      # Sort by timestamp descending to easily find the latest
-        #      score_dps.sort(key=lambda x: x['created_at'], reverse=True)
-        #      for dp in score_dps:
-        #          if dp['key'] not in latest_scores_map:
-        #               latest_scores_map[dp['key']] = dp['value']
-        
-        # # --- Fetch Recent Sensor Data for Tree --- 
-        # # Define types needed for the sensor tree display
-        # sensor_tree_types = [
-        #     'android.sensor.pressure', 
-        #     'android.sensor.accelerometer', 
-        #     'android.sensor.gyroscope', 
-        #     'gps', 
-        #     'android.sensor.wifi_scan', # May need processing based on key (BSSID)
-        #     'android.sensor.bluetooth_scan' # May need processing
-        # ]
-        # # Fetch the *single* most recent data point for each type needed in the tree
-        # # This is less efficient than getting all in one go and processing, but simpler
-        # # A better approach might be a dedicated DataStore method: get_latest_per_type()
-        # recent_sensor_dps = {}
-        # for sensor_type in sensor_tree_types:
-        #     latest_dp = data_store.get_data(
-        #         types=[sensor_type],
-        #         started_at=short_window_start, # Look in a short recent window
-        #         ended_at=iso_now,
-        #         limit=1
-        #     )
-        #     if latest_dp:
-        #          recent_sensor_dps[sensor_type] = latest_dp[0]
-
-        # # --- Construct the State Object (Matches Frontend Expectations) --- 
-        # state_data = {
-        #     "location": {
-        #          "predicted": {
-        #               "inferred_state": latest_prediction['value'] if latest_prediction else "Unknown",
-        #               "last_timestamp": latest_prediction['created_at'] if latest_prediction else None
-        #          }
-        #     },
-        #     "location_scores": latest_scores_map,
-        #     "sensors": {
-        #          # Example structure - adapt based on actual sensor types and desired display
-        #          "environment": {
-        #               "pressure": {
-        #                   "inferred_state": recent_sensor_dps.get('android.sensor.pressure', {}).get('value', 'N/A'),
-        #                   "last_timestamp": recent_sensor_dps.get('android.sensor.pressure', {}).get('created_at')
-        #               }
-        #          },
-        #          "motion": {
-        #               "accelerometer": {
-        #                   "inferred_state": recent_sensor_dps.get('android.sensor.accelerometer', {}).get('value', {}),
-        #                    # Value might be {x, y, z} - display appropriately or simplify
-        #                   "last_timestamp": recent_sensor_dps.get('android.sensor.accelerometer', {}).get('created_at')
-        #               },
-        #               "gyroscope": {
-        #                    "inferred_state": recent_sensor_dps.get('android.sensor.gyroscope', {}).get('value', {}),
-        #                    "last_timestamp": recent_sensor_dps.get('android.sensor.gyroscope', {}).get('created_at')
-        #               }
-        #          },
-        #          "position": {
-        #              "gps": {
-        #                   "inferred_state": recent_sensor_dps.get('gps', {}).get('value', {}),
-        #                   # Value might be {lat, lon, alt, acc}
-        #                   "last_timestamp": recent_sensor_dps.get('gps', {}).get('created_at')
-        #               }
-        #          },
-        #          "wireless": {
-        #               "wifi_scan": {
-        #                    # Display count or signal strength of strongest?
-        #                    "inferred_state": f"{len(data_store.get_data(types=['android.sensor.wifi_scan'], started_at=short_window_start, ended_at=iso_now))} networks seen",
-        #                    "last_timestamp": recent_sensor_dps.get('android.sensor.wifi_scan', {}).get('created_at')
-        #               },
-        #               "bluetooth_scan": {
-        #                    "inferred_state": f"{len(data_store.get_data(types=['android.sensor.bluetooth_scan'], started_at=short_window_start, ended_at=iso_now))} devices seen",
-        #                    "last_timestamp": recent_sensor_dps.get('android.sensor.bluetooth_scan', {}).get('created_at')
-        #               }
-        #          }
-        #     }
-        # }
         logger.debug(f"Returning no state data because it should be streamed to the frontend as we receive it from the device manager") # Log truncated state
         return jsonify({})
     except Exception as e:
@@ -637,7 +532,7 @@ def submit_event():
     try:
         # Create a data point for the manual event
         event_data_point = {
-            "type": "manual.event",
+            "type": description,
             "key": description, # Use description as key or generate unique ID
             "value": {
                  "description": description,

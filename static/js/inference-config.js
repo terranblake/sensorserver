@@ -591,7 +591,7 @@ class InferenceConfigManager {
         const { config_name, success, error } = eventData;
 
         // Log values being compared
-        console.log(`Comparing event config_name: '${config_name}' with this.currentConfig?.name: '${this.currentConfig?.name}'`);
+        // console.log(`Comparing event config_name: '${config_name}' with this.currentConfig?.name: '${this.currentConfig?.name}'`);
 
         // Optional: Show a persistent status update or notification?
         // For now, just log it and refresh if the completed run matches the current view
