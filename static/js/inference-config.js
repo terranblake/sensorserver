@@ -148,17 +148,32 @@ class InferenceConfigManager {
      * @param {Object} config - Configuration to display
      */
     viewConfig(config) {
-        if (!this.elements.configEditor) {
+        console.log("viewConfig called for:", config?.name);
+        if (!this.elements.configForm) {
+            console.error("Config form element not found!");
             return;
         }
         
         try {
-            // Format the config for display
-            const formattedJson = JSON.stringify(config, null, 2);
-            this.elements.configEditor.textContent = formattedJson;
+            // Make form visible and hide prompt
+            this.elements.configForm.style.display = 'block';
+            if (this.elements.selectPrompt) {
+                this.elements.selectPrompt.style.display = 'none';
+            }
+
+            // Populate the form fields
+            this.populateFormFields(config);
+
+            // Format the config for display (Optional: Maybe remove raw JSON display if form is sufficient)
+            // const formattedJson = JSON.stringify(config, null, 2);
+            // if (this.elements.configEditor) this.elements.configEditor.textContent = formattedJson;
             
             // Store the current config
             this.currentConfig = config;
+            
+            // Trigger loading data for other tabs
+            this.fetchAndRenderFingerprints(config.name);
+            this.fetchAndRenderRunHistory(config.name);
             
             // Update form fields if they exist
             this.populateFormFields(config);
@@ -190,10 +205,93 @@ class InferenceConfigManager {
     }
 
     /**
-     * Prepare to edit a configuration
+     * Fetch and render associated fingerprints for a given config name
+     * @param {string} configName - Name of the inference configuration
+     */
+    async fetchAndRenderFingerprints(configName) {
+        if (!this.elements.associatedFingerprintsList) return;
+        this.elements.associatedFingerprintsList.innerHTML = '<span class="list-group-item">Loading fingerprints...</span>';
+        console.log(`Fetching fingerprints associated with: ${configName}`);
+        try {
+            const allFingerprintsData = await api.fetchCalibratedFingerprints();
+            const allFingerprints = allFingerprintsData.calibrated_fingerprints || [];
+            
+            const associatedFps = allFingerprints.filter(fp => fp.inference_ref === configName);
+
+            this.elements.associatedFingerprintsList.innerHTML = ''; // Clear loading
+
+            if (associatedFps.length === 0) {
+                this.elements.associatedFingerprintsList.innerHTML = '<span class="list-group-item">No associated fingerprints found.</span>';
+                return;
+            }
+
+            const fragment = document.createDocumentFragment();
+            associatedFps.forEach(fp => {
+                const item = document.createElement('div');
+                item.className = 'list-group-item';
+                item.textContent = `Type: ${fp.type}, Created: ${new Date(fp.created_at).toLocaleString()}`;
+                // TODO: Add more details or actions if needed
+                fragment.appendChild(item);
+            });
+            this.elements.associatedFingerprintsList.appendChild(fragment);
+
+        } catch (error) {
+            console.error(`Error fetching/rendering fingerprints for ${configName}:`, error);
+            this.elements.associatedFingerprintsList.innerHTML = `<span class="list-group-item text-danger">Error loading fingerprints: ${error.message}</span>`;
+        }
+    }
+
+    /**
+     * Fetch and render run history for a given config name
+     * @param {string} configName - Name of the inference configuration
+     */
+    async fetchAndRenderRunHistory(configName) {
+        if (!this.elements.inferenceRunHistory) return;
+        this.elements.inferenceRunHistory.innerHTML = '<span class="list-group-item">Loading run history...</span>';
+        console.log(`Fetching run history for: ${configName}`);
+        try {
+            // Use the newly added API method
+            const historyData = await api.fetchInferenceHistory(configName);
+            const runs = historyData.runs || [];
+
+            this.elements.inferenceRunHistory.innerHTML = ''; // Clear loading
+
+            if (runs.length === 0) {
+                 this.elements.inferenceRunHistory.innerHTML = '<span class="list-group-item">No run history found for this configuration.</span>';
+                 return;
+            }
+
+            const fragment = document.createDocumentFragment();
+            // Display newest first
+            runs.forEach(run => {
+                const item = document.createElement('div');
+                item.className = 'list-group-item p-2 border-bottom'; // Add some padding/border
+                const runTime = new Date(run.created_at).toLocaleString();
+                const prediction = run.overall_prediction?.value || 'N/A';
+                const confidence = run.overall_prediction?.confidence !== undefined ? (run.overall_prediction.confidence * 100).toFixed(1) + '%' : 'N/A';
+                
+                item.innerHTML = `
+                    <strong>${runTime}</strong><br>
+                    Prediction: <strong>${prediction}</strong> (Confidence: ${confidence})
+                    <small class="d-block text-muted">Details: ${run.comparisons?.length || 0} comparisons</small>
+                `;
+                // TODO: Maybe add a button/link to view full run details later
+                fragment.appendChild(item);
+            });
+            this.elements.inferenceRunHistory.appendChild(fragment);
+
+        } catch (error) {
+             console.error(`Error fetching/rendering run history for ${configName}:`, error);
+             this.elements.inferenceRunHistory.innerHTML = `<span class="list-group-item text-danger">Error loading run history: ${error.message}</span>`;
+        }
+    }
+
+    /**
+     * Edit a configuration
      * @param {Object} config - Configuration to edit
      */
     editConfig(config) {
+        console.log("editConfig called for:", config?.name);
         // First view the config
         this.viewConfig(config);
         

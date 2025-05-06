@@ -283,6 +283,22 @@ class API {
         return await response.json();
     }
     
+    /**
+     * Fetch inference run history for a specific configuration
+     * @param {string} configName - Name of the inference configuration
+     * @param {number} count - Number of history items to fetch
+     * @returns {Promise<Object>} - Promise resolving to run history data
+     */
+    async fetchInferenceHistory(configName, count = 50) {
+        const response = await fetch(`${this.baseUrl}/api/inference/history/${configName}?count=${count}`);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error ${response.status}: ${await response.text()}`);
+        }
+        
+        return await response.json();
+    }
+    
     // --- State API ---
     
     /**
