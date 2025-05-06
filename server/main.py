@@ -15,7 +15,7 @@ from aiohttp import web # Specific import for aiohttp web components
 from urllib.parse import urlencode # Needed for URL encoding
 from collections import deque # Added for efficiently reading last N lines
 import re # Added for regular expression operations
-from typing import Optional # For type hinting
+from typing import Optional, Dict
 
 # --- Import Core Modules ---
 # Assume these files are in the same directory or accessible via Python path
@@ -165,57 +165,51 @@ app = Flask(__name__, static_folder='../static')
 # Place this somewhere before the Flask routes in main.py
 def _run_inference_background(app_context, config_name, current_time_str, completion_callback):
     """Runs inference in background and calls callback on completion."""
-    with app_context: # Use app context for potential Flask-related operations if needed later
-        logger = logging.getLogger(__name__) # Get logger within the context
+    with app_context:
+        logger = logging.getLogger(__name__)
+        inference_result = None # Initialize result
         try:
-            # Assuming inference_module is globally accessible or passed differently
-            # If not global, app context might help access app.config['INFERENCE_MODULE'] if stored there
-            # Make sure inference_module is accessible here
-            # If it's only defined in if __name__ == '__main__', it won't be accessible here
-            # Consider storing it in app.config as well
             inference_module = app.config.get('INFERENCE_MODULE') 
             if inference_module:
-                inference_module.run_inference(config_name, current_time_str)
+                # Capture the returned result object
+                inference_result = inference_module.run_inference(config_name, current_time_str)
                 logger.info(f"Background inference run for '{config_name}' completed successfully.")
                 if completion_callback:
-                    completion_callback(success=True, config_name=config_name, error=None)
+                    # Pass the full result to the callback
+                    completion_callback(success=True, config_name=config_name, result=inference_result, error=None)
             else:
-                 logger.error(f"InferenceModule not found in app config during background task for '{config_name}'")
+                 logger.error(f"InferenceModule not found in app config for '{config_name}'")
                  if completion_callback:
-                     completion_callback(success=False, config_name=config_name, error="InferenceModule not configured")
+                     completion_callback(success=False, config_name=config_name, result=None, error="InferenceModule not configured")
         except Exception as e:
             logger.error(f"Error during background inference run for '{config_name}': {e}", exc_info=True)
             if completion_callback:
-                completion_callback(success=False, config_name=config_name, error=str(e))
+                # Pass None for result on exception
+                completion_callback(success=False, config_name=config_name, result=None, error=str(e))
 
 # --- Callback function for WebSocket push ---
-# Place this before the Flask routes in main.py
-def _inference_completion_notify(success: bool, config_name: str, error: Optional[str]):
-    """Pushes a notification to the frontend via WebSocket."""
-    logger.info(f"Inference completed. Success: {success}, Config: {config_name}, Error: {error}")
+def _inference_completion_notify(success: bool, config_name: str, result: Optional[Dict], error: Optional[str]):
+    """Pushes the full inference result notification to the frontend via WebSocket."""
+    logger.info(f"Inference completed. Success: {success}, Config: {config_name}") # Simplified log
     try:
-        # Access DeviceManager stored in app config
         device_manager = app.config.get('DEVICE_MANAGER')
         if device_manager:
             message_data = {
-                "type": "inference_complete",
+                "type": "inference_result_update", # New message type
                 "config_name": config_name,
                 "success": success,
+                "result": result, # Include the full result object (can be None on error)
                 "error": error
             }
-            # Assuming DeviceManager has push_realtime_update method accessible
-            # Use run_coroutine_threadsafe to schedule the push on the DM's loop
             if hasattr(device_manager, '_loop') and device_manager._loop:
                  future = asyncio.run_coroutine_threadsafe(device_manager._push_data_to_frontend(message_data), device_manager._loop)
-                 # Optionally wait for future result with timeout, or just schedule and move on
-                 # future.result(timeout=5) # Example: wait up to 5 seconds
-                 logger.info(f"Scheduled inference_complete notification for {config_name}")
+                 logger.info(f"Scheduled inference_result_update notification for {config_name}")
             else:
-                 logger.warning("Cannot send inference_complete WS notification: DeviceManager loop not found.")
+                 logger.warning("Cannot send inference_result_update WS notification: DM loop not found.")
         else:
-            logger.warning("DeviceManager instance not found in app config. Cannot send WS notification.")
+            logger.warning("DeviceManager instance not found. Cannot send WS notification.")
     except Exception as e:
-        logger.error(f"Error sending inference completion notification for {config_name}: {e}", exc_info=True)
+        logger.error(f"Error sending inference result notification for {config_name}: {e}", exc_info=True)
 
 
 # --- Flask Routes ---

@@ -3,6 +3,7 @@ import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
 
 # Configure basic logging for the module
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -188,7 +189,7 @@ class InferenceModule:
         self,
         inference_config_name: str,
         current_time: str
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Execute an inference run for a specific configuration.
 
@@ -197,18 +198,18 @@ class InferenceModule:
             current_time: The current timestamp (ISO 8601 string) to use as the end of the data window.
 
         Returns:
-            A list of data_point objects representing the inference output (prediction, confidence, etc.).
+            The structured inference result.
         """
         # Early exit if FingerprintingModule is not set
         if self._fingerprinting_module is None:
             logger.error("FingerprintingModule is not set. Cannot run inference.")
-            return []
+            return {}
 
         # 1. Load the specified inference configuration
         inference_config = self._inference_configurations.get(inference_config_name)
         if not inference_config:
             logger.error(f"Inference configuration '{inference_config_name}' not found. Cannot run inference.")
-            return [] # Return empty list if config not found
+            return {} # Return empty dict if config not found
 
         inference_type = inference_config.get('inference_type')
         included_paths = inference_config.get('included_paths', [])
@@ -221,7 +222,7 @@ class InferenceModule:
 
         if not included_paths or window_duration_seconds is None or not data_point_types_to_query:
              logger.error(f"Inference configuration '{inference_config_name}' is missing required parameters ('included_paths', 'window_duration_seconds', or 'data_point_types').")
-             return []
+             return {}
 
         try:
             current_time_dt = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
@@ -229,7 +230,7 @@ class InferenceModule:
             started_at_str = started_at_dt.isoformat().replace('+00:00', 'Z')
         except ValueError as e:
             logger.error(f"Invalid 'current_time' timestamp format: {e}")
-            return []
+            return {}
 
         logger.info(f"Running inference '{inference_config_name}' ({inference_type}) using data points ${data_point_types_to_query} from {started_at_str} to {current_time}")
 
@@ -244,7 +245,24 @@ class InferenceModule:
 
         if not current_data_window_points:
             logger.warning(f"No current data points found for inference '{inference_config_name}' in the window {started_at_str} to {current_time}.")
-            return [] # Cannot run inference without current data
+            # We might still be able to generate a fingerprint with missing data, let generate_fingerprint handle it.
+            # return [] # Cannot run inference without current data
+
+        # --- NEW: Generate fingerprint for the current window --- 
+        current_fingerprint = None
+        current_fingerprint = self._fingerprinting_module.generate_fingerprint(
+            fingerprint_type=inference_type,
+            inference_config_name=inference_config_name,
+            ended_at=current_time
+        )
+        
+        if not current_fingerprint or not current_fingerprint.get('statistics'):
+             logger.warning(f"Could not generate current fingerprint or it has no statistics for config '{inference_config_name}' and window ending {current_time}. Cannot perform comparison.")
+             # TODO: Decide how to handle this - maybe return empty result or a specific status?
+             return {} # Cannot compare without current stats
+        
+        logger.info(f"Generated current fingerprint with {len(current_fingerprint.get('statistics', {}))} statistical paths.")
+        # --- END NEW --- 
 
         # 3. Load all calibrated fingerprints
         calibrated_fingerprints = self._fingerprinting_module.load_calibrated_fingerprints() # Use the set instance
@@ -261,7 +279,7 @@ class InferenceModule:
             logger.warning(f"No relevant calibrated fingerprints found for inference type '{inference_type}'. Cannot perform comparison.")
             # Even without calibrated fingerprints, we might want to log the current data snapshot
             # For now, return empty if no calibrated fingerprints to compare against.
-            return []
+            return {}
 
         logger.info(f"Loaded {len(relevant_calibrated_fingerprints)} relevant calibrated fingerprints for inference '{inference_config_name}' ({inference_type})")
 
@@ -275,7 +293,7 @@ class InferenceModule:
 
             # Calculate score and confidence for this comparison
             score_details = self._calculate_score(
-                current_data_window_points,
+                current_fingerprint, # Pass the generated stats
                 calibrated_fp_data,
                 inference_config
             )
@@ -315,7 +333,8 @@ class InferenceModule:
                 'value': overall_predicted_value,
                 'confidence': best_prediction_confidence
             },
-            'comparisons': inference_comparisons
+            'comparisons': inference_comparisons,
+            'fingerprint': current_fingerprint
         }
 
         # 7. Convert inference result to data_point format for logging
@@ -330,113 +349,123 @@ class InferenceModule:
                   self.data_store.set(dp, files=['inference_data']) # Log other inference metrics only to inference_data log
 
 
-        logger.info(f"Inference run '{inference_config_name}' completed. Logged {len(output_data_points)} data points.")
-        return output_data_points
+        logger.info(f"Inference run '{inference_config_name}' completed.") # Removed data point count
+        return inference_result # RETURN THE FULL RESULT OBJECT
 
 
     def _calculate_score(
         self,
-        current_data_points: List[Dict[str, Any]],
+        current_fingerprint: Dict[str, Any],
         calibrated_fingerprint: Dict[str, Any],
         inference_config: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Placeholder for the core generalized scoring algorithm.
-        Compares current data points against a calibrated fingerprint
-        based on the inference configuration's included_paths and sensor_weights.
+        Compares statistics from the current window against a calibrated fingerprint.
+        Iterates through paths in the calibrated fingerprint's statistics.
+        Applies weights based on the base type defined in the inference config.
 
         Args:
-            current_data_points: List of data_point objects for the current time window.
+            current_statistics: The current data statistics dictionary (keyed by full path).
             calibrated_fingerprint: The calibrated fingerprint object to compare against.
             inference_config: The inference configuration being used.
 
         Returns:
-            A dictionary containing:
-            - total_score: The overall similarity/difference score.
-            - confidence_score: A confidence score between 0 and 1.
-            - path_contributions: Detailed breakdown of contributions per included path.
+            A dictionary containing: total_score, confidence_score, path_contributions.
         """
-        # --- PLACEHOLDER SCORING LOGIC ---
-        # This is where the actual scoring algorithm needs to be implemented.
-        # It should be generalized to work with any data point types defined in included_paths.
-        # It needs to compare current_data_points (potentially aggregated into a temporary fingerprint
-        # or processed directly) against the statistics in calibrated_fingerprint['statistics'].
-        # The sensor_weights from inference_config['sensor_weights'] should be applied.
-        # The output should include a total_score and a confidence_score (0-1).
-        # path_contributions should detail how each included_path contributed.
-
-        # Dummy implementation returning placeholder values
         total_score = 0.0
-        confidence_score = 0.0
         path_contributions: Dict[str, Dict[str, Any]] = {}
-
-        included_paths = inference_config.get('included_paths', [])
+        
         sensor_weights = inference_config.get('sensor_weights', {})
-        calibrated_stats = calibrated_fingerprint.get('statistics', {})
 
-        # Example: Calculate a simple weighted difference (replace with actual logic)
-        current_stats: Dict[str, Dict[str, Any]] = {} # You would aggregate current_data_points here
+        current_fingerprint_stats = current_fingerprint.get('statistics', {})
+        calibrated_fingerprint_stats = calibrated_fingerprint.get('statistics', {})
 
-        # Dummy aggregation for current data points for this placeholder
-        current_values_by_path: Dict[str, List[Any]] = {}
-        for dp in current_data_points:
-             # Create the aggregated path: '{type}.{key}' or '{type}'
-             aggregated_path = dp['type']
-             if dp.get('key') is not None:
-                 aggregated_path = f"{dp['type']}.{dp['key']}"
+        # Iterate through the paths PRESENT IN THE CALIBRATED FINGERPRINT stats
+        for full_path, calib_stat in calibrated_fingerprint_stats.items():
+            # --- CORRECTED Weight Lookup ---
+            weight = 0.0
+            matched_base_type = None
+            # Check against keys in sensor_weights (which should be base types)
+            for base_type_key in sensor_weights.keys():
+                if full_path.startswith(base_type_key):
+                    weight = sensor_weights[base_type_key]
+                    matched_base_type = base_type_key
+                    # Optional: For robustness, ensure we take the longest match if prefixes overlap
+                    # This basic version takes the first match found.
+                    break # Found a matching base type
 
-             if aggregated_path in included_paths: # Only consider included paths
-                  if aggregated_path not in current_values_by_path:
-                       current_values_by_path[aggregated_path] = []
-                  current_values_by_path[aggregated_path].append(dp['value'])
+            if weight == 0.0:
+                logger.debug(f"Skipping path '{full_path}' as no matching base type with non-zero weight found in sensor_weights (checked prefixes: {list(sensor_weights.keys())}).")
+                continue
+            logger.debug(f"Path '{full_path}' matched base type '{matched_base_type}' for weight: {weight}")
+            # --- End CORRECTED Weight Lookup ---
 
-        for path in included_paths:
-             weight = sensor_weights.get(path, 0.0)
-             calibrated_stat = calibrated_stats.get(path)
-             current_values = current_values_by_path.get(path, [])
+            # Get the corresponding statistics for the current window
+            current_stat = current_fingerprint_stats.get(full_path) # Get stats dict for this path
 
-             unweighted_metric = 0.0 # Placeholder for the calculated metric (e.g., normalized difference)
-             weighted_contribution = 0.0
+            unweighted_metric = 0.0
+            weighted_contribution = 0.0
 
-             if calibrated_stat and current_values:
-                  # Dummy calculation: Use the first current value and compare to median
-                  current_value = current_values[0] if current_values else None # Use the first value as a simple example
-                  median = calibrated_stat.get('median_value')
-                  stddev = calibrated_stat.get('std_dev_value', 0.0) # Default stddev to 0 if missing
+            # If we have statistics for this path in BOTH calibrated and current fingerprints
+            if calib_stat and current_stat:
+                current_median = current_stat.get('median_value')
+                calib_median = calib_stat.get('median_value')
+                # Use calibrated stddev, default to min value if missing/zero
+                calib_stddev = calib_stat.get('std_dev_value', 0.01) 
+                
+                # --- Determine appropriate min stddev based on path type --- 
+                min_stddev = 0.01 # Default minimum
+                if 'wifi_scan.rssi' in full_path:
+                     min_stddev = inference_config.get('min_std_dev_rssi') or 0.01
+                elif 'pressure' in full_path:
+                     min_stddev = inference_config.get('min_std_dev_pressure') or 0.01
+                # Add elif for other types if needed
+                # --- 
+                
+                safe_stddev = max(calib_stddev, min_stddev) # Use the configured or default minimum
 
-                  if median is not None and isinstance(current_value, (int, float)) and stddev >= 0:
-                       # Avoid division by zero or very small numbers
-                       safe_stddev = max(stddev, 0.01)
-                       unweighted_metric = abs(current_value - median) / safe_stddev # Simple normalized difference
-                       weighted_contribution = unweighted_metric * weight # Weighted difference
+                # Check if both medians are valid numbers for comparison
+                if isinstance(calib_median, (int, float)) and isinstance(current_median, (int, float)):
+                    # Compare medians
+                    unweighted_metric = abs(current_median - calib_median) / safe_stddev
+                    weighted_contribution = unweighted_metric * weight
+                    logger.debug(f"  Path '{full_path}': CurrentMedian={current_median:.2f}, CalibMedian={calib_median:.2f}, CalibStdDev={calib_stddev:.2f}, Metric={unweighted_metric:.2f}, Weighted={weighted_contribution:.2f}")
+                else:
+                    # Handle cases where one or both medians might be None (e.g., path exists but no numeric data)
+                     logger.warning(f"  Path '{full_path}': Missing median value in current ({current_median}) or calibrated ({calib_median}) stats. Skipping comparison.")
+            else:
+                # Handle missing data (path exists in calibrated but not current, or vice-versa)
+                # Apply a penalty? For now, log and contribute 0.
+                if not current_stat:
+                    logger.debug(f"  Path '{full_path}': No current data/stats found for this path (present in calibrated).")
+                    # TODO: Apply penalty for missing current data
+                if not calib_stat: # Should not happen based on loop, but check defensively
+                     logger.warning(f"Path '{full_path}' present in loop but missing in calibrated_stats dict? Should not happen.")
+            
+            # Store contribution keyed by the full_path from the fingerprint
+            # logger.debug(f"Assigning path_contribution for: {full_path}") # Can remove this now
+            path_contributions[full_path] = {
+                'weighted_contribution': weighted_contribution,
+                'unweighted_metric': unweighted_metric,
+                'weight': weight
+            }
+            total_score += weighted_contribution
 
-             path_contributions[path] = {
-                 'weighted_contribution': weighted_contribution,
-                 'unweighted_metric': unweighted_metric,
-                 'weight': weight
-             }
-             total_score += weighted_contribution # Summing weighted differences as a simple placeholder score
+        # TODO: Consider paths in current_statistics but NOT in calibrated_stats?
+        # Should we apply a penalty if the current fingerprint sees networks/keys
+        # that the calibrated one doesn't have? For now, we only score based on calibrated paths.
 
-        # Dummy confidence score calculation (invert and clamp a normalized total score)
-        # This will need to be replaced with a proper confidence mapping based on the actual scoring algorithm
-        # Example: Assuming a maximum reasonable total score based on expected differences and weights
-        # This is highly dependent on the actual scoring logic and data ranges.
-        # For this placeholder, let's assume a max possible unweighted metric of 100 per path
-        # and a max weight of 1.0, summed over included paths.
-        max_unweighted_metric_per_path = 100.0 # Arbitrary
-        max_total_unweighted_score = max_unweighted_metric_per_path * len(included_paths)
-        max_total_weighted_score = sum(sensor_weights.values()) * max_unweighted_metric_per_path if included_paths else 0
-
-        # Use the sum of weights for normalization if weights are intended to sum to 1.0
-        total_weight_sum = sum(sensor_weights.values()) if sensor_weights else 1.0
-        normalized_total_score = total_score / (max_total_weighted_score if max_total_weighted_score > 0 else 1.0) # Normalize by a max expected score
-
-
-        confidence_score = 1.0 - normalized_total_score # Simple inversion (higher score -> lower confidence)
-        confidence_score = max(0.0, min(confidence_score, 1.0)) # Ensure 0-1 range
-
+        # --- Dummy confidence score calculation (needs proper implementation) ---
+        confidence_scaling_factor = inference_config.get('confidence_scaling_factor', 0.01)
+        # Use default value if the retrieved value is None (e.g., from explicit null in config)
+        actual_scaling_factor = confidence_scaling_factor if confidence_scaling_factor is not None else 0.01
+        confidence_score = max(0.0, min(1.0, 1.0 - (total_score * actual_scaling_factor)))
+        # --- END Dummy confidence ---
 
         logger.debug(f"Calculated score for {calibrated_fingerprint.get('type')}: Total={total_score:.2f}, Confidence={confidence_score:.2f}")
+        
+        # Log the final state of path_contributions before returning
+        logger.debug(f"Final path_contributions before return: {path_contributions}")
 
         return {
             'total_score': total_score,

@@ -38,6 +38,9 @@
                         <a class="nav-link {% if request.endpoint == 'inference_configs' %}active{% endif %}" href="/inference_configs">Inferences</a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link{{ ' active' if request.endpoint == 'run_inference_page' else '' }}" href="/run_inference">Run</a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'logs' %}active{% endif %}" href="/logs">Logs</a>
                     </li>
                 </ul>
@@ -65,7 +68,7 @@
     
     <!-- Basic WebSocket status indicator logic -->
     <script type="module">
-        import api from '{{ url_for('static', filename='js/api.js') }}';
+        import api from '{{ url_for(\'static\', filename=\'js/api.js\') }}';
         const statusIcon = document.querySelector('#websocket-status i');
         
         api.onWebSocketEvent('open', () => {
