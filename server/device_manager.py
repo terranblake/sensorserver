@@ -136,17 +136,16 @@ class DeviceManager:
         Connects to the device's WebSocket server and receives sensor data.
         Attempts to reconnect if the connection is lost.
         """
-        # Use IP address as the consistent identifier for logging and WS messages
+        # Use IP address as the consistent identifier
         device_ip = self.device_host 
-        # Fetch friendly name info once using self.device_info (populated by query_device_info)
-        # Add error handling in case self.device_info is somehow still missing, default to IP
-        device_info_dict = getattr(self, 'device_info', {}) 
+        # Define friendly_name using self.device_info (should be populated by start method)
+        device_info_dict = getattr(self, 'device_info', {}) # Safely get device_info
         friendly_name = device_info_dict.get('name') or device_info_dict.get('model') or device_ip
+        logger.info(f"_connect_and_receive_websocket_data started. friendly_name='{friendly_name}', device_ip='{device_ip}'") 
         
         while not self._stop_event.is_set():
+            websocket_uri = None
             try:
-                # Construct the WebSocket URI with sensor types as a query parameter
-                # The device client's WSS server needs to support this
                 if not self._available_sensor_types:
                      logger.warning("No available sensor types discovered. Cannot connect WebSocket client.")
                      await asyncio.sleep(5) # Wait before retrying discovery
@@ -162,36 +161,72 @@ class DeviceManager:
                 async with websockets.connect(websocket_uri, ping_interval=20, ping_timeout=20, open_timeout=20) as websocket:
                     logger.info(f"WebSocket client connection established to device at {websocket_uri}")
                     self._device_websocket_client = websocket # Store the active connection
+                    # Push connected status (using the thread-safe method)
+                    self.push_realtime_update({
+                         'type': 'device_connection',
+                         'status': 'connected',
+                         'device': device_ip # Use IP
+                    })
 
                     try:
                         async for message in websocket:
                             try:
+                                # Ensure correct variables are used for the collector call
                                 raw_data = json.loads(message)
-                                # Pass the raw data to the Collector using variables defined at function start
-                                self.collector.receive_raw_data(raw_data, device_identifier=friendly_name, device_ip=device_ip)
+                                self.collector.receive_raw_data(raw_data, device_identifier=friendly_name, device_ip=device_ip) # Use vars from function start
                                 logger.debug(f"Received and passed raw data from device WebSocket client ({device_ip}, ID: {friendly_name}): {raw_data.get('type', 'Unknown Type')}")
 
                                 # Push sensor data with IP - Directly await the push coroutine
-
+                                await self._push_data_to_frontend({
+                                    'type': 'sensor_data',
+                                    'device': device_ip, # Use IP
+                                    'data': raw_data
+                                })
                             except json.JSONDecodeError:
                                 logger.warning(f"Received invalid JSON over device WebSocket client: {message}")
                             except Exception as e:
                                 logger.error(f"Error processing device WebSocket client message: {e}", exc_info=True)
 
                     except websockets.exceptions.ConnectionClosedOK:
-                        logger.info(f"Device WebSocket client connection closed cleanly.")
+                        logger.info(f"Device {friendly_name} ({device_ip}) WebSocket client connection closed cleanly.") # Use vars
                     except websockets.exceptions.ConnectionClosedError as e:
-                        logger.warning(f"Device WebSocket client connection closed with error: {e}")
+                        logger.warning(f"Device {friendly_name} ({device_ip}) WebSocket client connection closed with error: {e}") # Use vars
                     except Exception as e:
-                        logger.error(f"Unexpected error in device WebSocket client: {e}", exc_info=True)
+                        logger.error(f"Unexpected error in receive loop for device {friendly_name} ({device_ip}): {e}", exc_info=True) # Use vars
+            
+            except (ConnectionRefusedError, TimeoutError, OSError, 
+                    websockets.exceptions.InvalidURI, 
+                    websockets.exceptions.WebSocketException) as e:
+                error_message = f"Connection failed to device {friendly_name} ({device_ip}) at {websocket_uri or self.device_ws_uri}: {e}" # Use vars
+                logger.warning(error_message)
+                self.push_realtime_update({
+                     'type': 'device_connection',
+                     'status': 'error',
+                     'device': device_ip, # Use IP
+                     'message': str(e)
+                })
             except Exception as e:
-                logger.error(f"Unexpected error in device WebSocket client: {e}", exc_info=True)
+                error_message = f"Unexpected error setting up connection for {friendly_name} ({device_ip}) at {websocket_uri or self.device_ws_uri}: {e}" # Use vars
+                logger.error(error_message, exc_info=True)
+                self.push_realtime_update({
+                     'type': 'device_connection',
+                     'status': 'error',
+                     'device': device_ip, # Use IP
+                     'message': f'Unexpected setup error: {e}'
+                })
 
-            logger.info("Device WebSocket client connection lost. Attempting to reconnect in 5 seconds...")
+            # Moved push disconnect logic to ensure it always runs if connection fails/closes
+            self.push_realtime_update({
+                 'type': 'device_connection',
+                 'status': 'disconnected',
+                 'device': device_ip # Use IP
+            })
+                 
+            logger.info(f"Device {friendly_name} ({device_ip}) WebSocket client connection lost/failed. Reconnect in 5s...")
             self._device_websocket_client = None # Clear the old connection
-            await asyncio.sleep(5) # Wait before attempting to reconnect
+            await asyncio.sleep(5)
 
-        logger.info("Device WebSocket client connection task stopped.")
+        logger.info(f"Device {friendly_name} ({device_ip}) WebSocket client task stopped.") # Use vars
 
 
     async def _http_handler(self, request):
@@ -267,19 +302,58 @@ class DeviceManager:
 
     async def _push_data_to_frontend(self, data):
         """Pushes data (raw or processed) to all connected frontend websockets."""
-        # Format the data as needed for the frontend
-        message = json.dumps(data) # Example: send raw data directly
-        # Send the message to all connected frontend websockets
-        await asyncio.gather(*[ws.send(message) for ws in self._frontend_websockets if not ws.closed])
+        message = None
+        try:
+            message = json.dumps(data)
+        except Exception as json_error:
+            logger.error(f"DM: !!! FAILED to json.dumps data: {json_error}. Data was: {data}", exc_info=True)
+            return
+            
+        if message is None:
+             return
+             
+        # Re-implement sequential send loop with wait_for
+        sockets_to_send = list(self._frontend_websockets) 
+        sent_count = 0
+        
+        for ws in sockets_to_send:
+            # NO "if not ws.closed:" check here
+            try:
+                logger.info(f"DM: Attempting send to WS: {ws.remote_address} with timeout...")
+                await asyncio.wait_for(ws.send(message), timeout=2.0)
+                logger.info(f"DM: Successfully sent to WS: {ws.remote_address}")
+                sent_count += 1
+            except asyncio.TimeoutError:
+                logger.error(f"DM: Timeout sending message to WS: {ws.remote_address}")
+            except websockets.exceptions.ConnectionClosedOK:
+                logger.warning(f"DM: WS {ws.remote_address} closed OK during send attempt.")
+            except websockets.exceptions.ConnectionClosedError as ws_err:
+                logger.error(f"DM: WS {ws.remote_address} closed with ERROR during send attempt: {ws_err}", exc_info=False)
+            except Exception as e:
+                logger.error(f"DM: Unexpected error sending to WS {ws.remote_address}: {e}", exc_info=True)
+        
+        # REMOVED gather logic completely
 
-    def push_realtime_update(self, data):
+    def push_realtime_update(self, data: Dict[str, Any]) -> None:
         """
         Thread-safe method to push data to connected frontend clients.
         Called by other modules (e.g., Collector) running in different threads.
+
+        Args:
+            data: The data to push (e.g., a data_point dictionary).
         """
-        if self._loop and self._frontend_websockets:
+        # Ensure the asyncio loop is available and the stop event is not set
+        if self._loop and not self._stop_event.is_set():
             # Schedule the async _push_data_to_frontend coroutine on the asyncio loop
-            asyncio.run_coroutine_threadsafe(self._push_data_to_frontend(data), self._loop)
+            # Use a try-except block to catch potential errors when scheduling
+            try:
+                asyncio.run_coroutine_threadsafe(self._push_data_to_frontend(data), self._loop)
+            except RuntimeError as e:
+                 # This can happen if the loop is already closing or closed
+                 logger.warning(f"Failed to schedule frontend push coroutine: {e}")
+            except Exception as e:
+                 logger.error(f"Unexpected error scheduling frontend push: {e}", exc_info=True)
+
         elif not self._loop:
              logger.warning("Asyncio loop not set in DeviceManager. Cannot push real-time updates.")
         # No warning if _frontend_websockets is empty, as there's no one to push to
@@ -329,9 +403,11 @@ class DeviceManager:
         # You might want to do something with this list here, e.g., log it or make it available via API
 
         # --- Establish and Maintain WebSocket Client Connection to Device ---
-        # This will run concurrently with the servers
-        self._device_client_task = asyncio.create_task(self._connect_and_receive_websocket_data())
-
+        # Call _connect_and_receive_websocket_data without arguments
+        logger.info(f"Creating client task. Device info should be set: {getattr(self, 'device_info', 'MISSING')}") # Log verification
+        self._device_client_task = asyncio.create_task(
+            self._connect_and_receive_websocket_data()
+        )
 
         # Keep the DeviceManager running until the stop event is set
         await self._stop_event.wait()
@@ -402,28 +478,4 @@ class DeviceManager:
              details['status'] = 'disconnected'
              
         return details
-
-    def push_realtime_update(self, data: Dict[str, Any]) -> None:
-        """
-        Thread-safe method to push data to connected frontend clients.
-        Called by other modules (e.g., Collector) running in different threads.
-
-        Args:
-            data: The data to push (e.g., a data_point dictionary).
-        """
-        # Ensure the asyncio loop is available and the stop event is not set
-        if self._loop and not self._stop_event.is_set():
-            # Schedule the async _push_data_to_frontend coroutine on the asyncio loop
-            # Use a try-except block to catch potential errors when scheduling
-            try:
-                asyncio.run_coroutine_threadsafe(self._push_data_to_frontend(data), self._loop)
-            except RuntimeError as e:
-                 # This can happen if the loop is already closing or closed
-                 logger.warning(f"Failed to schedule frontend push coroutine: {e}")
-            except Exception as e:
-                 logger.error(f"Unexpected error scheduling frontend push: {e}", exc_info=True)
-
-        elif not self._loop:
-             logger.warning("Asyncio loop not set in DeviceManager. Cannot push real-time updates.")
-        # No warning if _frontend_websockets is empty, as there's no one to push to
 
