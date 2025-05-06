@@ -4,47 +4,87 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Sensor Dashboard{% endblock %}</title>
-    <!-- TODO: Add CSS links (e.g., Bootstrap) -->
+    <!-- Bootstrap CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome for Icons (Optional) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <!-- Custom CSS -->
+    <link href="{{ url_for('static', filename='css/main.css') }}" rel="stylesheet">
     <style>
-        /* Basic styling */
+        /* Basic styling (can be removed if fully handled in main.css) */
         body { padding-top: 5rem; }
-        .sensor-tree ul { list-style-type: none; padding-left: 20px; }
         .nav-link.active { font-weight: bold; }
     </style>
 </head>
 <body>
     <nav class="navbar navbar-expand-md navbar-dark bg-dark fixed-top">
         <div class="container-fluid">
-            <a class="navbar-brand" href="#">Sensor Dashboard</a>
+            <a class="navbar-brand" href="/">Sensor Dashboard</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarCollapse">
                 <ul class="navbar-nav me-auto mb-2 mb-md-0">
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'inference' %}active{% endif %}" href="/inference">Inference</a>
+                        <a class="nav-link {% if request.endpoint == 'devices' %}active{% endif %}" href="/devices">Devices</a>
                     </li>
                     <li class="nav-item">
-                        <!-- Use url_for later -->
-                        <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" aria-current="page" href="/">Event Annotation</a>
+                        <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" aria-current="page" href="/">Events</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if request.endpoint == 'logs' %}active{% endif %}" href="/logs">Log Viewer</a>
+                        <a class="nav-link {% if request.endpoint == 'fingerprinting' %}active{% endif %}" href="/fingerprinting">Fingerprints</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'inference_configs' %}active{% endif %}" href="/inference_configs">Inferences</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'logs' %}active{% endif %}" href="/logs">Logs</a>
                     </li>
                 </ul>
+                <!-- Placeholder for potential future elements like status indicator -->
+                <span class="navbar-text me-2" id="websocket-status" title="WebSocket Connection Status">
+                    <i class="fas fa-circle text-secondary"></i> <!-- Default: disconnected -->
+                </span>
             </div>
         </div>
     </nav>
 
-    <main class="container">
+    <main class="container fade-in">
         {% block content %}
         <!-- Page specific content will go here -->
         {% endblock %}
     </main>
 
-    <!-- TODO: Add JS links (e.g., Bootstrap Bundle) -->
+    <!-- Bootstrap Bundle JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Core JS Modules (Load on all pages) -->
+    <script type="module" src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='js/state.js') }}"></script>
+    <!-- Page specific scripts -->
     {% block scripts %}{% endblock %}
+    
+    <!-- Basic WebSocket status indicator logic -->
+    <script type="module">
+        import api from '{{ url_for('static', filename='js/api.js') }}';
+        const statusIcon = document.querySelector('#websocket-status i');
+        
+        api.onWebSocketEvent('open', () => {
+            statusIcon.classList.remove('text-secondary', 'text-danger');
+            statusIcon.classList.add('text-success');
+        });
+        
+        api.onWebSocketEvent('close', () => {
+            statusIcon.classList.remove('text-success', 'text-secondary');
+            statusIcon.classList.add('text-danger');
+        });
+        
+        api.onWebSocketEvent('error', () => {
+             statusIcon.classList.remove('text-success', 'text-secondary');
+             statusIcon.classList.add('text-danger');
+        });
+        
+        // Initialize connection (API module handles reconnect logic)
+        api.connectWebSocket();
+    </script>
 </body>
 </html> 

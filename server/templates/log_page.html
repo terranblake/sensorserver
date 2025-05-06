@@ -78,68 +78,10 @@
             }
         }
 
-        // Fetch logs on initial page load
         document.addEventListener('DOMContentLoaded', fetchLogs);
 
         // Fetch logs when the filter changes
         logTypeSelect.addEventListener('change', fetchLogs);
-
-        // --- SSE Connection ---
-        function connectEventSource() {
-            console.log("Connecting to SSE stream...");
-            const evtSource = new EventSource("/logs/stream");
-
-            evtSource.onmessage = function(event) {
-                try {
-                    const logEntry = JSON.parse(event.data);
-                    const currentFilter = logTypeSelect.value;
-
-                    // Only append if it matches the current filter or filter is 'all'
-                    if (currentFilter === 'all' || currentFilter === logEntry.type) {
-                        const lineElement = document.createElement('div');
-                        lineElement.textContent = formatLogLine(logEntry);
-                        logOutput.appendChild(lineElement);
-                        
-                        // Auto-scroll if near the bottom
-                        const isScrolledToBottom = logOutput.scrollHeight - logOutput.clientHeight <= logOutput.scrollTop + 1;
-                        if(isScrolledToBottom) {
-                            logOutput.scrollTop = logOutput.scrollHeight;
-                        }
-                    }
-                } catch (e) {
-                    console.error("Error parsing SSE data:", e, "Data:", event.data);
-                }
-            };
-
-            evtSource.onerror = function(err) {
-                console.error("EventSource failed:", err);
-                logOutput.appendChild(document.createTextNode("--- Log stream disconnected. Refresh page to reconnect. ---"));
-                evtSource.close(); // Close the connection on error
-            };
-            
-            // Keep track of the source to potentially close it later if needed
-            window.currentEventSource = evtSource;
-        }
-
-        // Close existing connection if filter changes (optional, but good practice)
-        logTypeSelect.addEventListener('change', () => {
-            if (window.currentEventSource) {
-                window.currentEventSource.close();
-                console.log("Closed previous SSE connection due to filter change.");
-            }
-            // Fetch historical logs first
-            fetchLogs().then(() => {
-                 // Reconnect after fetching historical data for the new filter
-                 connectEventSource(); 
-            });
-        });
-
-        // Initial connection after fetching historical logs
-        document.addEventListener('DOMContentLoaded', () => {
-             fetchLogs().then(() => {
-                 connectEventSource(); 
-             });
-        });
 
         // Optional: Add periodic refresh
         // setInterval(fetchLogs, 5000); // Refresh every 5 seconds

@@ -1,0 +1,233 @@
+/**
+ * Main CSS file for Sensor Dashboard
+ */
+
+/* General layout */
+body {
+    padding-top: 5rem;
+}
+
+/* Sensor tree display */
+.sensor-tree ul {
+    list-style-type: none;
+    padding-left: 20px;
+}
+
+/* Active navigation links */
+.nav-link.active {
+    font-weight: bold;
+}
+
+/* Code/pre display */
+pre.code-display {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    padding: 1rem;
+    overflow: auto;
+    font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+}
+
+/* Log viewer */
+#logOutput {
+    max-height: 600px;
+    overflow-y: scroll;
+    border: 1px solid #ccc;
+    padding: 10px;
+    background-color: #f8f9fa;
+    font-family: monospace;
+    font-size: 0.875rem;
+}
+
+/* Dashboard cards */
+.dashboard-card {
+    transition: transform 0.2s ease-in-out;
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.dashboard-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+}
+
+/* Data point highlighting */
+.data-point-row {
+    transition: background-color 0.2s ease-in-out;
+}
+
+.data-point-row:hover {
+    background-color: rgba(0, 123, 255, 0.1);
+}
+
+/* Status indicators */
+.status-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+}
+
+.status-active {
+    background-color: #28a745;
+}
+
+.status-inactive {
+    background-color: #dc3545;
+}
+
+.status-pending {
+    background-color: #ffc107;
+}
+
+/* Inference confidence visualization */
+.confidence-bar {
+    height: 5px;
+    background-color: #e9ecef;
+    border-radius: 0.25rem;
+    margin-top: 5px;
+    overflow: hidden;
+}
+
+.confidence-value {
+    height: 100%;
+    background-color: #007bff;
+    border-radius: 0.25rem;
+}
+
+/* Form elements */
+textarea.code-input {
+    font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.875rem;
+}
+
+/* Responsive tables */
+.table-responsive {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Tabs styling */
+.nav-tabs .nav-link {
+    border-top-left-radius: 0.5rem;
+    border-top-right-radius: 0.5rem;
+}
+
+.tab-content {
+    border: 1px solid #dee2e6;
+    border-top: none;
+    padding: 1rem;
+    border-bottom-left-radius: 0.5rem;
+    border-bottom-right-radius: 0.5rem;
+}
+
+/* Real-time data indicator */
+.real-time-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+    background-color: #28a745;
+    animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+    100% {
+        opacity: 1;
+    }
+}
+
+/* Buttons with icons */
+.btn-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon i {
+    margin-right: 0.5rem;
+}
+
+/* Tools section */
+.tools-section {
+    background-color: #f8f9fa;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-bottom: 2rem;
+}
+
+/* Error message display */
+.error-message {
+    color: #dc3545;
+    background-color: rgba(220, 53, 69, 0.1);
+    border: 1px solid rgba(220, 53, 69, 0.2);
+    border-radius: 0.25rem;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1rem;
+}
+
+/* Success message display */
+.success-message {
+    color: #28a745;
+    background-color: rgba(40, 167, 69, 0.1);
+    border: 1px solid rgba(40, 167, 69, 0.2);
+    border-radius: 0.25rem;
+    padding: 0.75rem 1.25rem;
+    margin-bottom: 1rem;
+}
+
+/* Info panels */
+.info-panel {
+    background-color: rgba(0, 123, 255, 0.1);
+    border-left: 4px solid #007bff;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+    body.dark-mode {
+        background-color: #212529;
+        color: #f8f9fa;
+    }
+    
+    body.dark-mode .bg-light {
+        background-color: #343a40 !important;
+    }
+    
+    body.dark-mode .card {
+        background-color: #343a40;
+        border-color: #495057;
+    }
+    
+    body.dark-mode .text-muted {
+        color: #adb5bd !important;
+    }
+    
+    body.dark-mode pre.code-display,
+    body.dark-mode #logOutput {
+        background-color: #212529;
+        border-color: #495057;
+        color: #f8f9fa;
+    }
+}
+
+/* Fade in animation for content loading */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+} 

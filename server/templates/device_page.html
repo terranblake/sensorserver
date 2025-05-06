@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block title %}Device Status & Data{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <div class="row">
+        <!-- Left Column: Device List -->
+        <div class="col-md-4 col-lg-3">
+            <h2>Devices</h2>
+            <p><small>List refreshes on page load. Status updates in real-time.</small></p>
+            <div id="deviceList" class="list-group"> 
+                <!-- Device list will be populated here -->
+                <span class="list-group-item">Loading devices...</span>
+            </div>
+        </div>
+
+        <!-- Right Column: Streaming Data -->
+        <div class="col-md-8 col-lg-9">
+            <h2>Live Data Stream</h2>
+            <p id="streamingStatus">Select a device from the list to view its live data stream.</p>
+            <pre id="dataStreamOutput" style="max-height: 70vh; overflow-y: scroll; border: 1px solid #ccc; padding: 10px; background-color: #f8f9fa; white-space: pre-wrap; word-wrap: break-word;">
+                <!-- Raw data points will appear here -->
+            </pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+    <script type="module" src="{{ url_for('static', filename='js/device-page.js') }}"></script>
+{% endblock %} 

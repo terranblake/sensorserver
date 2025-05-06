@@ -3,6 +3,7 @@ package github.umer0586.sensorserver.webserver
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorManager
+import android.os.Build
 import com.yanzhenjie.andserver.annotation.GetMapping
 import com.yanzhenjie.andserver.annotation.RestController
 import com.yanzhenjie.andserver.http.HttpResponse
@@ -66,6 +67,15 @@ class RequestController {
         ))
 
         return JsonUtil.toJSON(sensorsList)
+    }
+
+    @GetMapping("/device_info")
+    fun getDeviceInfo(context: Context): String {
+        val deviceInfo = mapOf(
+            "name" to Build.MANUFACTURER,
+            "model" to Build.MODEL
+        )
+        return JsonUtil.toJSON(deviceInfo)
     }
 
 }

@@ -26,88 +26,93 @@ class Collector:
         self.data_store = data_store
         logger.info("Collector initialized.")
 
-    def receive_raw_data(self, raw_data: Dict[str, Any]) -> None:
+    def receive_raw_data(self, raw_data: Dict[str, Any], device_identifier: str, device_ip: str) -> None:
         """
-        Receives raw sensor data from the Sensor Server and processes it by dispatching
-        to type-specific handler functions. Converts raw data to data_point format
-        and logs to the DataStore.
+        Receives raw sensor data, processes it, and logs to the DataStore.
+        Includes a friendly identifier and the source IP address.
 
         Args:
-            raw_data: A dictionary representing the raw data received from a sensor.
-                      Expected format is similar to what your client sends.
+            raw_data: Raw sensor data dictionary.
+            device_identifier: Friendly identifier (Name/Model/Host).
+            device_ip: The actual IP address of the source device.
         """
-        logger.debug(f"Received raw data: {raw_data}")
+        logger.debug(f"Received raw data from device '{device_identifier}' ({device_ip}): {raw_data}")
 
-        # Validate basic structure of raw data - Early exit
+        # Validate basic structure
         raw_type = raw_data.get('type')
-        raw_values = raw_data.get('values') # Note: GPS data doesn't use 'values'
-        raw_name = raw_data.get('name')  # Get sensor name if available
+        raw_values = raw_data.get('values') 
+        raw_name = raw_data.get('name')
 
         if not raw_type:
-            logger.warning(f"Received raw data missing 'type'. Skipping processing: {raw_data}")
+            logger.warning(f"Received raw data from {device_identifier} ({device_ip}) missing 'type'. Skipping: {raw_data}")
             return
 
-        # Dispatch to type-specific handler function
         data_points_to_log: List[Dict[str, Any]] = []
+        created_at = self._get_created_at(raw_data)
 
-        # Handle sensors with 'values' list
+        # Dispatch based on type, passing device_ip for logging
         if raw_values is not None:
             if raw_type == 'android.sensor.pressure':
-                data_points_to_log = self._handle_pressure_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Pass raw_type
-            elif raw_type in ['android.sensor.accelerometer', 'android.sensor.accelerometer_uncalibrated', 'android.sensor.linear_acceleration', 'android.sensor.gravity', 'android.sensor.magnetic_field']:
-                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Accel and other vectors
+                data_points_to_log = self._handle_pressure_data(raw_type, raw_name, raw_values, created_at, device_ip)
+            elif raw_type in ['android.sensor.accelerometer', 'android.sensor.accelerometer_uncalibrated', 'android.sensor.linear_acceleration', 'android.sensor.gravity', 'android.sensor.magnetic_field', 'android.sensor.magnetic_field_uncalibrated']: # Added uncalibrated mag field
+                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, created_at, device_ip)
             elif raw_type in ['android.sensor.gyroscope', 'android.sensor.gyroscope_uncalibrated']:
-                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Gyro is also a vector
-            elif raw_type in ['android.sensor.rotation_vector', 'android.sensor.game_rotation_vector', 'android.sensor.geomagnetic_rotation_vector', 'android.sensor.orientation']:
-                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data)) # Other vector/rotation sensors
+                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, created_at, device_ip)
+            elif raw_type in ['android.sensor.rotation_vector', 'android.sensor.game_rotation_vector', 'android.sensor.geomagnetic_rotation_vector']:
+                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, created_at, device_ip)
             elif raw_type == 'android.sensor.wifi_scan':
-                data_points_to_log = self._handle_wifi_scan_data(raw_values)
+                data_points_to_log = self._handle_wifi_scan_data(raw_values, created_at, device_ip)
             elif raw_type == 'android.sensor.bluetooth_scan':
-                data_points_to_log = self._handle_bluetooth_scan_data(raw_values)
+                data_points_to_log = self._handle_bluetooth_scan_data(raw_values, created_at, device_ip)
             elif raw_type == 'android.sensor.orientation':
-                data_points_to_log = self._handle_orientation_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data))
+                data_points_to_log = self._handle_vector_sensor_data(raw_type, raw_name, raw_values, created_at, device_ip) # Orientation has 3 values like vector
             elif raw_type in ['com.google.sensor.gyro_temperature', 'com.google.sensor.pressure_temp']:
-                data_points_to_log = self._handle_temperature_data(raw_type, raw_name, raw_values, self._get_created_at(raw_data))
-            elif raw_type == 'android.sensor.touchscreen':
-                data_points_to_log = self._handle_touch_data(raw_type, raw_name, raw_data, self._get_created_at(raw_data))
+                data_points_to_log = self._handle_temperature_data(raw_type, raw_name, raw_values, created_at, device_ip)
             else:
-                # Default handling for other sensor types with values array
-                logger.warning(f"Unsupported raw data type: {raw_type}. Skipping conversion.")
-        # Handle sensors with a different structure (like GPS)
-        elif raw_type == 'android.sensor.gps' or raw_type == 'gps':
-            # For GPS, the raw_data dict itself contains the data fields
-            data_points_to_log = self._handle_gps_data(raw_type, raw_name, raw_data, self._get_created_at(raw_data))
+                logger.warning(f"Unsupported raw data type from {device_identifier} ({device_ip}): {raw_type}. Skipping.")
+        
+        elif raw_type in ['android.sensor.gps', 'gps']:
+            data_points_to_log = self._handle_gps_data(raw_type, raw_name, raw_data, created_at, device_ip)
+        
+        elif raw_type == 'android.sensor.touchscreen': # Touch data might not have 'values'
+            data_points_to_log = self._handle_touch_data(raw_type, raw_name, raw_data, created_at, device_ip)
+            
         else:
-            # Handle sensors without 'values' list
-            logger.warning(f"Raw data type '{raw_type}' has no 'values' field. Skipping conversion: {raw_data}")
+            logger.warning(f"Raw data type '{raw_type}' from {device_identifier} ({device_ip}) has unexpected structure. Skipping.")
 
         # Log the data points
         if data_points_to_log:
-            logger.debug(f"Converted raw data to {len(data_points_to_log)} data points.")
+            logger.debug(f"Converted raw data from {device_identifier} ({device_ip}) to {len(data_points_to_log)} data points.")
             for dp in data_points_to_log:
-                self.data_store.set_data(dp, files=['raw_data'])
-
+                try:
+                    self.data_store.set(dp, files=['raw_data'])
+                    logger.debug(f"Logged dp from {device_ip}: {dp.get('type')}/{dp.get('key')}")
+                except Exception as e:
+                    logger.error(f"Failed to log data point from {device_ip}: {e}, Data: {dp}", exc_info=True)
         else:
-            logger.debug(f"No data points generated from raw data type: {raw_type}.")
+            logger.debug(f"No data points generated from raw data type: {raw_type} from {device_identifier} ({device_ip}).")
 
     def _get_created_at(self, raw_data: Dict[str, Any]) -> str:
         """
-        Handles timestamp data from raw data.
+        Gets a timezone-aware UTC timestamp string in ISO 8601 format (ending with 'Z').
+        Uses the timestamp from raw_data if available and valid, otherwise uses current UTC time.
         """
-        raw_timestamp_str = raw_data.get('timestamp') # Use timestamp from raw data if available
-        formatted_timestamp = datetime.fromtimestamp(raw_timestamp_str / 1000).isoformat()
+        raw_timestamp_ms = raw_data.get('timestamp') # Assume timestamp is in milliseconds
 
-        # Use the timestamp from the raw data if provided, otherwise generate current time
-        created_at = None
-        if formatted_timestamp:
+        if raw_timestamp_ms is not None:
             try:
-                # Attempt to parse the raw timestamp
-                datetime.fromisoformat(formatted_timestamp.replace('Z', '+00:00'))
-                created_at = formatted_timestamp # Use raw timestamp if valid
-            except ValueError:
-                logger.warning(f"Invalid timestamp format in raw data: {formatted_timestamp}. Using current time.")
-
-        return created_at if created_at else datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+                # Convert milliseconds to seconds
+                timestamp_sec = float(raw_timestamp_ms) / 1000.0
+                # Create a timezone-aware datetime object directly from the UTC timestamp
+                utc_dt = datetime.fromtimestamp(timestamp_sec, tz=timezone.utc)
+                # Format as ISO 8601 with 'Z' indicator
+                return utc_dt.isoformat().replace('+00:00', 'Z')
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid or non-numeric raw timestamp '{raw_timestamp_ms}': {e}. Using current UTC time.")
+                # Fall through to use current time if conversion fails
+        
+        # Fallback: Use current UTC time if raw timestamp is missing or invalid
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     def receive_inference_result(self, inference_result: Dict[str, Any]) -> None:
         """
@@ -127,25 +132,34 @@ class Collector:
         if output_data_points:
              logger.debug(f"Converted inference result to {len(output_data_points)} data points for logging.")
              for dp in output_data_points:
-                 # Log prediction and confidence to raw_data and inference_data
-                 # Log the full structured result to inference_data
+                 # Determine which files to log this specific data point type to
+                 log_files = ['raw_data'] # Default to raw_data
+                 dp_type = dp.get('type', '')
                  inference_type = inference_result.get('inference_type', 'unknown_type')
-                 if dp['type'] in [f'inference.{inference_type}.prediction', f'inference.{inference_type}.confidence']:
-                      self.data_store.set_data(dp, files=['raw_data', 'inference_data'])
-                 elif dp['type'] == f'inference.{inference_type}.result':
-                      self.data_store.set_data(dp, files=['inference_data'])
-                 else:
-                      # Log any other unexpected data points from conversion
-                      logger.warning(f"Logging unexpected inference data point type: {dp.get('type')}. Logging to inference_data.")
-                      self.data_store.set_data(dp, files=['inference_data'])
+                 
+                 # Define types that should also go into inference_data.log
+                 inference_log_types = [
+                     f'inference.{inference_type}.prediction',
+                     f'inference.{inference_type}.confidence',
+                     f'inference.{inference_type}.score',
+                     f'inference.{inference_type}.result' # The full structured result
+                 ]
+                 
+                 if dp_type in inference_log_types:
+                     log_files.append('inference_data')
+                     
+                 # Log the data point to the determined files
+                 try:
+                     self.data_store.set(dp, files=list(set(log_files))) # Use set to avoid duplicates
+                     logger.debug(f"Logged inference dp type '{dp_type}' to files: {log_files}")
+                 except Exception as e:
+                     logger.error(f"Failed to log inference data point via DataStore: {e}, Data: {dp}", exc_info=True)
 
         else:
              logger.warning("No data points generated from inference result for logging.")
 
-    def _handle_pressure_data(self, sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
-        """Handles conversion for android.sensor.pressure data."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_pressure_data(self, sensor_type: str, raw_name: Optional[str], raw_values: Any, created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         if not isinstance(raw_values, list) or not raw_values:
             logger.warning(f"Pressure data 'values' is not a non-empty list: {raw_values}. Skipping data point.")
             return data_points # Early exit
@@ -160,17 +174,16 @@ class Collector:
             'created_at': created_at,
             'type': sensor_type, # Use the sensor type as the data point type
             'key': raw_name, # Set key to None for scalar sensors without instance ID in raw data
-            'value': float(pressure_value) # Ensure float type
+            'value': float(pressure_value), # Ensure float type
+            'device': device_ip # Add device ID
         })
 
         # TODO: If raw data includes a sensor instance ID, use that for the 'key' instead of None
 
         return data_points
 
-    def _handle_vector_sensor_data(self , sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
-        """Handles conversion for vector-based sensor data (Accelerometer, Gyroscope, etc.)."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_vector_sensor_data(self, sensor_type: str, raw_name: Optional[str], raw_values: Any, created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         if not isinstance(raw_values, list) or len(raw_values) < 3:
             logger.warning(f"Vector sensor data '{sensor_type}' 'values' is not a list with at least 3 elements: {raw_values}. Skipping data points.")
             return data_points # Early exit
@@ -192,7 +205,8 @@ class Collector:
                      'created_at': created_at,
                      'type': f'{sensor_type}.{vector_keys[i]}', # e.g., 'android.sensor.accelerometer.x'
                      'key': raw_name, # Set key to None for vector components without instance ID in raw data
-                     'value': float(value)
+                     'value': float(value),
+                     'device': device_ip # Add device ID
                  })
              else:
                   # Log a warning if expected x, y, or z is missing
@@ -212,7 +226,8 @@ class Collector:
                             'created_at': created_at,
                             'type': f'{sensor_type}.{bias_keys[i]}',
                             'key': raw_name, # Set key to None for bias components
-                            'value': float(bias_value)
+                            'value': float(bias_value),
+                            'device': device_ip # Add device ID
                         })
                     else:
                          logger.warning(f"Non-numeric bias value for {sensor_type} component {bias_keys[i]}: {bias_value}. Skipping data point.")
@@ -228,7 +243,8 @@ class Collector:
                           'created_at': created_at,
                           'type': f'{sensor_type}.scalar',
                           'key': raw_name, # Set key to None for scalar component
-                          'value': float(scalar_value)
+                          'value': float(scalar_value),
+                          'device': device_ip # Add device ID
                       })
                  else:
                       logger.warning(f"Non-numeric scalar value for {sensor_type}: {scalar_value}. Skipping data point.")
@@ -242,7 +258,8 @@ class Collector:
                                'created_at': created_at,
                                'type': f'{sensor_type}.accuracy',
                                'key': raw_name, # Set key to None for accuracy
-                               'value': float(accuracy_value)
+                               'value': float(accuracy_value),
+                               'device': device_ip # Add device ID
                            })
                       else:
                            logger.warning(f"Non-numeric accuracy value for {sensor_type}: {accuracy_value}. Skipping data point.")
@@ -265,10 +282,8 @@ class Collector:
 
         return data_points
 
-    def _handle_gps_data(self, sensor_type: str, raw_name: str, raw_data: Dict[str, Any], created_at: str) -> List[Dict[str, Any]]:
-        """Handles conversion for gps data."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_gps_data(self, sensor_type: str, raw_name: Optional[str], raw_data: Dict[str, Any], created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         # Define the keys we expect in GPS raw data and their data point types
         gps_fields = {
             'latitude': 'android.sensor.gps.latitude',
@@ -314,19 +329,17 @@ class Collector:
                     'created_at': created_at,
                     'type': dp_type, # e.g., 'android.sensor.gps.latitude'
                     'key': raw_name, # Set key to None for GPS fields without instance ID in raw data
-                    'value': value
+                    'value': value,
+                    'device': device_ip # Add device ID
                 })
             # No warning for missing optional fields, as some might not always be present
 
         # TODO: If raw data includes a sensor instance ID, use that for the 'key' instead of None
 
-
         return data_points
 
-    def _handle_touch_data(self, raw_type: str, raw_name: str, raw_data: Dict[str, Any], created_at: str) -> List[Dict[str, Any]]:
-        """Handles conversion for android.sensor.touchscreen data."""
-        data_points: List[Dict[str, Any]] = []
-        
+    def _handle_touch_data(self, raw_type: str, raw_name: Optional[str], raw_data: Dict[str, Any], created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         # Extract the key fields from touch data
         x = raw_data.get('x')
         y = raw_data.get('y')
@@ -337,7 +350,8 @@ class Collector:
                 'created_at': created_at,
                 'type': 'android.sensor.touchscreen.x',
                 'key': 'x',
-                'value': float(x)
+                'value': float(x),
+                'device': device_ip # Add device ID
             })
             
         if y is not None:
@@ -345,7 +359,8 @@ class Collector:
                 'created_at': created_at,
                 'type': 'android.sensor.touchscreen.y',
                 'key': 'y',
-                'value': float(y)
+                'value': float(y),
+                'device': device_ip # Add device ID
             })
             
         if action is not None:
@@ -353,15 +368,14 @@ class Collector:
                 'created_at': created_at,
                 'type': 'android.sensor.touchscreen.action',
                 'key': 'action',
-                'value': str(action)
+                'value': str(action),
+                'device': device_ip # Add device ID
             })
             
         return data_points
 
-    def _handle_wifi_scan_data(self, raw_values: Any) -> List[Dict[str, Any]]:
-        """Handles conversion for android.sensor.wifi_scan data."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_wifi_scan_data(self, raw_values: Any, created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         if not isinstance(raw_values, list):
              logger.warning(f"WiFi scan 'values' is not a list: {raw_values}. Skipping data points.")
              return data_points # Early exit
@@ -375,8 +389,6 @@ class Collector:
             net_id = network_data.get('bssid')
             if net_id is None:
                 net_id = network_data.get('id') # Try 'id' if 'bssid' is missing
-
-            created_at = self._get_created_at(network_data)
 
             net_rssi = network_data.get('rssi') # Signal strength
             net_frequency = network_data.get('frequency')
@@ -393,7 +405,8 @@ class Collector:
                     'created_at': created_at,
                     'type': 'android.sensor.wifi_scan.rssi',
                     'key': str(net_id), # Use ID as key
-                    'value': float(net_rssi) # Ensure float type
+                    'value': float(net_rssi), # Ensure float type
+                    'device': device_ip # Add device ID
                 })
             else:
                  logger.warning(f"Non-numeric RSSI for wifi {net_id}: {net_rssi}. Skipping RSSI data point.")
@@ -405,7 +418,8 @@ class Collector:
                           'created_at': created_at,
                           'type': 'android.sensor.wifi_scan.frequency',
                           'key': str(net_id), # Use ID as key
-                          'value': float(net_frequency)
+                          'value': float(net_frequency),
+                          'device': device_ip # Add device ID
                       })
                  else:
                       logger.warning(f"Non-numeric Frequency for wifi {net_id}: {net_frequency}. Skipping Frequency data point.")
@@ -417,17 +431,16 @@ class Collector:
                           'created_at': created_at,
                           'type': 'android.sensor.wifi_scan.channel',
                           'key': str(net_id), # Use ID as key
-                          'value': float(net_channel)
+                          'value': float(net_channel),
+                          'device': device_ip # Add device ID
                       })
                  else:
                       logger.warning(f"Non-numeric Channel for wifi {net_id}: {net_channel}. Skipping Channel data point.")
 
         return data_points
 
-    def _handle_bluetooth_scan_data(self, raw_values: Any) -> List[Dict[str, Any]]:
-        """Handles conversion for android.sensor.bluetooth_scan data."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_bluetooth_scan_data(self, raw_values: Any, created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         if not isinstance(raw_values, list):
              logger.warning(f"Bluetooth scan 'values' is not a list: {raw_values}. Skipping data points.")
              return data_points # Early exit
@@ -442,7 +455,6 @@ class Collector:
             if net_id is None:
                 net_id = device_data.get('id') # Try 'id' if 'address' is missing
 
-            created_at = self._get_created_at(device_data)
             net_rssi = device_data.get('rssi') # Signal strength
 
             if not net_id or net_rssi is None:
@@ -456,17 +468,16 @@ class Collector:
                     'created_at': created_at,
                     'type': 'android.sensor.bluetooth_scan.rssi',
                     'key': str(net_id), # Use ID as key
-                    'value': float(net_rssi) # Ensure float type
+                    'value': float(net_rssi), # Ensure float type
+                    'device': device_ip # Add device ID
                 })
             else:
                  logger.warning(f"Non-numeric RSSI for bluetooth {net_id}: {net_rssi}. Skipping RSSI data point.")
 
         return data_points
 
-    def _handle_temperature_data(self, sensor_type: str, raw_name: str, raw_values: Any, created_at: str) -> List[Dict[str, Any]]:
-        """Handles conversion for temperature data from gyro and pressure sensors."""
-        data_points: List[Dict[str, Any]] = []
-
+    def _handle_temperature_data(self, sensor_type: str, raw_name: Optional[str], raw_values: Any, created_at: str, device_ip: str) -> List[Dict[str, Any]]:
+        data_points = []
         if not isinstance(raw_values, list) or not raw_values:
             logger.warning(f"Temperature data '{sensor_type}' 'values' is not a non-empty list: {raw_values}. Skipping data point.")
             return data_points # Early exit
@@ -481,7 +492,8 @@ class Collector:
             'created_at': created_at,
             'type': sensor_type,
             'key': raw_name, # Use the sensor name as the key
-            'value': float(temp_value) # Ensure float type
+            'value': float(temp_value), # Ensure float type
+            'device': device_ip # Add device ID
         })
 
         return data_points
@@ -550,7 +562,7 @@ if __name__ == '__main__':
         'values': [1013.1],
         'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     }
-    collector.receive_raw_data(raw_pressure_data)
+    collector.receive_raw_data(raw_pressure_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     raw_wifi_data = {
         'type': 'android.sensor.wifi_scan',
@@ -561,7 +573,7 @@ if __name__ == '__main__':
         ],
         'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     }
-    collector.receive_raw_data(raw_wifi_data)
+    collector.receive_raw_data(raw_wifi_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     raw_bluetooth_data = {
         'type': 'android.sensor.bluetooth_scan',
@@ -572,7 +584,7 @@ if __name__ == '__main__':
         ],
         'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     }
-    collector.receive_raw_data(raw_bluetooth_data)
+    collector.receive_raw_data(raw_bluetooth_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     raw_network_scan_data = {
          'type': 'android.sensor.network_scan',
@@ -586,16 +598,16 @@ if __name__ == '__main__':
          },
          'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     }
-    collector.receive_raw_data(raw_network_scan_data)
+    collector.receive_raw_data(raw_network_scan_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     # Simulate receiving raw data for accel, gyro, and GPS
     raw_accel_data = {"values": [-0.5515456, 8.256434, 9.052647], "accuracy": 1, "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), "type": "android.sensor.accelerometer"}
-    collector.receive_raw_data(raw_accel_data)
+    collector.receive_raw_data(raw_accel_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     raw_gyro_data = {"values": [-0.5510005, -1.1102476, 0.34422258], "accuracy": 3, "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'), "type": "android.sensor.gyroscope"}
-    collector.receive_raw_data(raw_gyro_data)
+    collector.receive_raw_data(raw_gyro_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     raw_gps_data = {"longitude": -94.72710985728278, "latitude": 39.008755212939704, "altitude": 289.6259594694927, "bearing": 0.0, "accuracy": 6.659035, "speed": 0.0, "time": 1746376604000, "lastKnowLocation": True, "speedAccuracyMetersPerSecond": 0.0, "bearingAccuracyDegrees": 0.0, "elapsedRealtimeNanos": 255761225672000, "verticalAccuracyMeters": 4.1526594, "elapsedRealtimeAgeMillis": 465875, "elapsedRealtimeUncertaintyNanos": 100000.0, "type": "gps", "timestamp": datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}
-    collector.receive_raw_data(raw_gps_data)
+    collector.receive_raw_data(raw_gps_data, device_identifier="192.168.1.1", device_ip="192.168.1.1")
 
     print("\nCollector example finished. Check log files for data points.")

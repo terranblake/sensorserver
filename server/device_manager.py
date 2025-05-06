@@ -43,6 +43,7 @@ class DeviceManager:
         self.device_http_port = device_http_port
         self.device_ws_port = device_ws_port
         self.device_http_url = f"http://{device_host}:{device_http_port}/sensors" # URL to query device sensors
+        self.device_info_url = f"http://{device_host}:{device_http_port}/device_info" # URL for device info
         self.device_ws_uri = f"ws://{device_host}:{device_ws_port}" # URI for device WebSocket
 
         self.listen_host = listen_host
@@ -66,6 +67,32 @@ class DeviceManager:
 
         logger.info(f"DeviceManager initialized. Device: HTTP={self.device_http_url}, WS={self.device_ws_uri}. Listening on: HTTP={self.listen_host}:{self.listen_http_port}, WS={self.listen_host}:{self.listen_ws_port}, Frontend WS={self.listen_host}:{self.frontend_ws_port}")
 
+
+    async def query_device_info(self) -> Dict[str, Optional[str]]:
+        """Queries the device's HTTP endpoint to get device name and model."""
+        logger.info(f"Attempting to fetch device info from {self.device_info_url}")
+        info = {'name': None, 'model': None}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(self.device_info_url, timeout=10) as response:
+                    if response.status == 200:
+                        data = await response.json(content_type=None)
+                        info['name'] = data.get('name')
+                        info['model'] = data.get('model')
+                        logger.info(f"Received device info from {self.device_info_url}: {info}")
+                    else:
+                        logger.warning(f"Failed to fetch device info from {self.device_info_url}. Status: {response.status}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching device info from {self.device_info_url}.")
+        except aiohttp.ClientError as e:
+            logger.warning(f"Connection error fetching device info from {self.device_info_url}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error fetching device info from {self.device_info_url}: {e}", exc_info=True)
+        
+        # Assign to instance attribute EVEN IF FAILED (will contain None values)
+        self.device_info = info 
+        logger.info(f"Device info set to: {self.device_info}") # Added verification log
+        return info
 
     async def query_available_sensors(self) -> List[str]:
         """
@@ -109,6 +136,13 @@ class DeviceManager:
         Connects to the device's WebSocket server and receives sensor data.
         Attempts to reconnect if the connection is lost.
         """
+        # Use IP address as the consistent identifier for logging and WS messages
+        device_ip = self.device_host 
+        # Fetch friendly name info once using self.device_info (populated by query_device_info)
+        # Add error handling in case self.device_info is somehow still missing, default to IP
+        device_info_dict = getattr(self, 'device_info', {}) 
+        friendly_name = device_info_dict.get('name') or device_info_dict.get('model') or device_ip
+        
         while not self._stop_event.is_set():
             try:
                 # Construct the WebSocket URI with sensor types as a query parameter
@@ -131,19 +165,13 @@ class DeviceManager:
 
                     try:
                         async for message in websocket:
-                            # Assume message is a JSON string containing raw sensor data
                             try:
                                 raw_data = json.loads(message)
-                                # Pass the raw data to the Collector
-                                self.collector.receive_raw_data(raw_data)
-                                logger.debug(f"Received and passed raw data from device WebSocket client: {raw_data.get('type', 'Unknown Type')}")
+                                # Pass the raw data to the Collector using variables defined at function start
+                                self.collector.receive_raw_data(raw_data, device_identifier=friendly_name, device_ip=device_ip)
+                                logger.debug(f"Received and passed raw data from device WebSocket client ({device_ip}, ID: {friendly_name}): {raw_data.get('type', 'Unknown Type')}")
 
-                                # --- Real-time Push to Frontend ---
-                                # If this raw data should be immediately pushed to the frontend,
-                                # you would format it and send it to connected frontend websockets.
-                                # This requires a separate WebSocket server for the frontend.
-                                # For now, this is a placeholder for that logic.
-                                # await self._push_data_to_frontend(raw_data) # Example call
+                                # Push sensor data with IP - Directly await the push coroutine
 
                             except json.JSONDecodeError:
                                 logger.warning(f"Received invalid JSON over device WebSocket client: {message}")
@@ -295,11 +323,9 @@ class DeviceManager:
         logger.info(f"Frontend WebSocket server started on ws://{self.listen_host}:{self.frontend_ws_port}")
 
 
-        # --- Query Available Sensors from Device (Client Role) ---
-        # This should happen after our servers are up, but before connecting the client WebSocket
-        # Call the query_available_sensors method
+        # --- Query Device Info and Available Sensors ---
+        await self.query_device_info()
         await self.query_available_sensors()
-        # Store the discovered types (already done in query_available_sensors)
         # You might want to do something with this list here, e.g., log it or make it available via API
 
         # --- Establish and Maintain WebSocket Client Connection to Device ---

@@ -5,6 +5,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import statistics # For calculating median and standard deviation
 import zlib # For compressing raw data reference (simple example)
+import numpy as np # For median and standard deviation calculations
 
 # Configure basic logging for the module
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'), format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -127,134 +128,137 @@ class FingerprintingModule:
             logger.error(f"Error saving calibrated fingerprints to {self.calibrated_fingerprints_path}: {e}", exc_info=True)
 
 
-    def generate_fingerprint(
-        self,
-        fingerprint_type: str,
-        inference_config_name: str,
-        ended_at: str
-    ) -> Optional[Dict[str, Any]]:
+    def generate_fingerprint(self, fingerprint_type: str, inference_config_name: str, ended_at: str) -> Optional[Dict[str, Any]]:
         """
-        Generate a fingerprint from data points in the Data Store, based on an inference config.
+        Generates a fingerprint from data points in the Data Store, based on an inference config.
+        Pre-populates statistics based on the config's included_paths.
 
         Args:
-            fingerprint_type: The type to assign to the generated fingerprint (e.g., 'location.current', 'location.kitchen').
-            inference_config_name: The name of the inference configuration to use for data point types and window duration.
-            ended_at: End of the data window (ISO 8601 string). Start time is calculated using window_duration.
+            fingerprint_type: The type to assign to the generated fingerprint (e.g., 'location.current').
+            inference_config_name: The name of the inference configuration to use.
+            ended_at: End of the data window (ISO 8601 string).
 
         Returns:
-            A fingerprint object, or None if the inference configuration is not found or no data is available.
+            A fingerprint object dictionary or None if config not found or error occurs.
         """
-        # Early exit if InferenceModule is not set
-        if self._inference_module is None:
-            logger.error("InferenceModule is not set. Cannot generate fingerprint as config is needed.")
+        logger.info(f"Generating fingerprint: type='{fingerprint_type}', config='{inference_config_name}', end='{ended_at}'")
+        
+        if not self._inference_module:
+            logger.error("Inference Module not set. Cannot load configuration.")
             return None
-
-        # 1. Get inference configuration to determine data types and window duration
-        inference_configs = self._inference_module.load_inference_configurations() # Use the set instance
-        inference_config = inference_configs.get(inference_config_name)
-
-        if not inference_config:
-            logger.error(f"Inference configuration '{inference_config_name}' not found. Cannot generate fingerprint.")
+            
+        # 1. Load Inference Configuration
+        config = self._inference_module.load_inference_configurations().get(inference_config_name)
+        if not config:
+            logger.error(f"Inference configuration '{inference_config_name}' not found.")
             return None
+            
+        # Extract necessary config parameters
+        window_duration = config.get('window_duration_seconds', 30) # Default 30s
+        data_point_types_to_fetch = config.get('data_point_types', [])
+        included_paths = config.get('included_paths', [])
+        
+        if not data_point_types_to_fetch:
+            logger.warning(f"Inference config '{inference_config_name}' has no 'data_point_types'. Cannot fetch data.")
+            # Proceed to generate fingerprint with empty stats if no types specified
+            
+        if not included_paths:
+            logger.warning(f"Inference config '{inference_config_name}' has no 'included_paths'. Statistics will be empty.")
+            # Proceed, but stats object will remain empty
 
-        data_point_types_to_include = inference_config.get('data_point_types', [])
-        window_duration_seconds = inference_config.get('window_duration_seconds')
-
-        if not data_point_types_to_include or window_duration_seconds is None:
-             logger.error(f"Inference configuration '{inference_config_name}' is missing 'data_point_types' or 'window_duration_seconds'.")
-             return None
-
+        # Calculate start time
         try:
-            ended_at_dt = datetime.fromisoformat(ended_at.replace('Z', '+00:00'))
-            started_at_dt = ended_at_dt - timedelta(seconds=window_duration_seconds)
-            started_at_str = started_at_dt.isoformat().replace('+00:00', 'Z')
+            end_dt = datetime.fromisoformat(ended_at.replace('Z', '+00:00'))
+            start_dt = end_dt - timedelta(seconds=window_duration)
+            started_at = start_dt.isoformat().replace('+00:00', 'Z')
         except ValueError as e:
-            logger.error(f"Invalid 'ended_at' timestamp format: {e}")
+            logger.error(f"Invalid ended_at timestamp format '{ended_at}': {e}")
             return None
+            
+        # 2. Initialize Statistics Dictionary
+        statistics = {}
+        for path in included_paths:
+            statistics[path] = {
+                'median_value': None,
+                'std_dev_value': None,
+                'num_samples': 0
+            }
+            
+        # 3. Fetch Data Points (only if types are specified)
+        all_data_points = []
+        if data_point_types_to_fetch:
+            try:
+                all_data_points = self.data_store.get_data(
+                    types=data_point_types_to_fetch,
+                    started_at=started_at,
+                    ended_at=ended_at
+                )
+                logger.info(f"Fetched {len(all_data_points)} data points for fingerprint generation.")
+            except Exception as e:
+                 logger.error(f"Error fetching data from DataStore for fingerprint: {e}", exc_info=True)
+                 # Continue with empty data, stats will remain default
 
-        logger.info(f"Generating fingerprint for type '{fingerprint_type}' using config '{inference_config_name}' from {started_at_str} to {ended_at}")
-
-        # 2. Retrieve raw data points from DataStore within the time window
-        # We need data points for ALL types defined in the inference config's data_point_types
-        raw_data_points = self.data_store.get_data(
-            types=data_point_types_to_include,
-            started_at=started_at_str,
-            ended_at=ended_at,
-            files=['raw_data'] # Assume raw sensor data is in 'raw_data.log'
-        )
-
-        if not raw_data_points:
-            logger.warning(f"No raw data points found for fingerprint generation in the window {started_at_str} to {ended_at} for types {data_point_types_to_include}.")
-            # Still return a fingerprint structure, but with empty statistics
-            return self._create_fingerprint_object(
-                fingerprint_type=fingerprint_type,
-                inference_config_name=inference_config_name,
-                started_at=started_at_str,
-                ended_at=ended_at,
-                statistics={},
-                raw_data_points=[] # Store empty list or None if no data
-            )
-
-
-        # 3. Calculate statistics for each unique data_point type and key
-        statistics: Dict[str, Dict[str, Any]] = {}
-        data_points_by_path: Dict[str, List[Any]] = {} # To collect values per aggregated path
-
-        for dp in raw_data_points:
-            # Create the aggregated path: '{type}.{key}' or '{type}'
-            aggregated_path = dp['type']
+        # 4. Group Data Points by Path and Calculate Statistics
+        grouped_data: Dict[str, List[float]] = {}
+        for dp in all_data_points:
+            # Construct the data path (type or type.key)
+            path = dp['type']
             if dp.get('key') is not None:
-                aggregated_path = f"{dp['type']}.{dp['key']}"
-
-            if aggregated_path not in data_points_by_path:
-                data_points_by_path[aggregated_path] = []
-
-            data_points_by_path[aggregated_path].append(dp['value'])
-
-        for aggregated_path, values in data_points_by_path.items():
-            if not values:
-                continue
-
-            # Attempt to calculate statistics only if values are numeric
-            numeric_values = [v for v in values if isinstance(v, (int, float))]
-
-            if len(numeric_values) > 0:
-                stats: Dict[str, Any] = {
-                    'num_samples': len(numeric_values)
-                }
-                # Calculate median and std dev only if there's enough data
-                if len(numeric_values) > 0: # Median requires at least one sample
-                     try:
-                         stats['median_value'] = statistics.median(numeric_values)
-                     except statistics.StatisticsError:
-                          stats['median_value'] = None # Handle case with non-numeric or empty list after filtering
-                          logger.warning(f"Could not calculate median for {aggregated_path}. Non-numeric values or insufficient data.")
-                if len(numeric_values) > 1: # Std dev requires at least two samples
-                     try:
-                         stats['std_dev_value'] = statistics.stdev(numeric_values)
-                     except statistics.StatisticsError:
-                          stats['std_dev_value'] = 0.0 # Default to 0 if stdev cannot be calculated (e.g., all values are same)
-                          logger.debug(f"Could not calculate standard deviation for {aggregated_path}. All values are the same or insufficient data.")
+                path = f"{path}.{dp['key']}"
+            
+            # Only process paths that are included in the config
+            if path in included_paths:
+                value = dp.get('value')
+                # Ensure value is numeric for calculations
+                if isinstance(value, (int, float)):
+                    if path not in grouped_data:
+                        grouped_data[path] = []
+                    grouped_data[path].append(float(value))
                 else:
-                     stats['std_dev_value'] = 0.0 # Default to 0 if only one sample
+                    logger.warning(f"Skipping non-numeric value for path '{path}': {value}")
 
-
-                statistics[aggregated_path] = stats
+        # 5. Update Statistics Dictionary with Calculated Values
+        for path, values in grouped_data.items():
+            if values: # Ensure there are values to calculate
+                num_samples = len(values)
+                median_value = np.median(values)
+                std_dev_value = np.std(values)
+                
+                # Update the pre-initialized entry
+                statistics[path] = {
+                    'median_value': median_value,
+                    'std_dev_value': std_dev_value,
+                    'num_samples': num_samples
+                }
+                logger.debug(f"Calculated stats for path '{path}': n={num_samples}, median={median_value:.2f}, stddev={std_dev_value:.2f}")
             else:
-                 logger.debug(f"No numeric values found for {aggregated_path} to calculate statistics.")
+                 # This case shouldn't happen if values were added correctly, but handle defensively
+                 logger.warning(f"Path '{path}' found in grouped_data but has no values.")
 
+        # Compress raw data for reference (optional)
+        # raw_data_ref = self._compress_data(all_data_points)
+        raw_data_ref = None # Keep simple for now
 
-        # 4. Create the fingerprint object
-        fingerprint = self._create_fingerprint_object(
-            fingerprint_type=fingerprint_type,
-            inference_config_name=inference_config_name,
-            started_at=started_at_str,
-            ended_at=ended_at,
-            statistics=statistics,
-            raw_data_points=raw_data_points # Pass raw data points for compression
-        )
-
-        logger.info(f"Generated fingerprint for type '{fingerprint_type}' with {len(statistics)} aggregated paths.")
+        # Create fingerprint object
+        now_iso = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        fingerprint = {
+            'type': fingerprint_type,
+            'created_at': now_iso,
+            'updated_at': now_iso, # created and updated are same initially
+            'inference_ref': inference_config_name,
+            'statistics': statistics,
+            'raw_data_ref': raw_data_ref,
+            # Add generation parameters for context
+            'generation_params': {
+                'started_at': started_at,
+                'ended_at': ended_at,
+                'window_duration_seconds': window_duration,
+                'data_point_types': data_point_types_to_fetch, # Record types used for fetching
+                'included_paths': included_paths # Record paths used for stats
+            }
+        }
+        
+        logger.info(f"Successfully generated fingerprint for type '{fingerprint_type}'")
         return fingerprint
 
     def _create_fingerprint_object(

@@ -214,7 +214,6 @@ class InferenceModule:
         confidence_threshold = inference_config.get('confidence_threshold', 0.0)
         significant_difference = inference_config.get('significant_difference', 1.0)
 
-
         if not included_paths or window_duration_seconds is None or not data_point_types_to_query:
              logger.error(f"Inference configuration '{inference_config_name}' is missing required parameters ('included_paths', 'window_duration_seconds', or 'data_point_types').")
              return []
@@ -227,7 +226,7 @@ class InferenceModule:
             logger.error(f"Invalid 'current_time' timestamp format: {e}")
             return []
 
-        logger.info(f"Running inference '{inference_config_name}' ({inference_type}) using data from {started_at_str} to {current_time}")
+        logger.info(f"Running inference '{inference_config_name}' ({inference_type}) using data points ${data_point_types_to_query} from {started_at_str} to {current_time}")
 
         # 2. Get the current data window from the DataStore
         # Use the data_point_types_to_query from the config
@@ -259,6 +258,7 @@ class InferenceModule:
             # For now, return empty if no calibrated fingerprints to compare against.
             return []
 
+        logger.info(f"Loaded {len(relevant_calibrated_fingerprints)} relevant calibrated fingerprints for inference '{inference_config_name}' ({inference_type})")
 
         # 4. Iterate through relevant calibrated fingerprints and calculate scores
         inference_comparisons: List[Dict[str, Any]] = []
@@ -320,9 +320,9 @@ class InferenceModule:
         for dp in output_data_points:
              # Log prediction and confidence to raw_data and inference_data
              if dp['type'] in [f'inference.{inference_type}.prediction', f'inference.{inference_type}.confidence']:
-                  self.data_store.set_data(dp, files=['raw_data', 'inference_data'])
+                  self.data_store.set(dp, files=['raw_data', 'inference_data'])
              else:
-                  self.data_store.set_data(dp, files=['inference_data']) # Log other inference metrics only to inference_data log
+                  self.data_store.set(dp, files=['inference_data']) # Log other inference metrics only to inference_data log
 
 
         logger.info(f"Inference run '{inference_config_name}' completed. Logged {len(output_data_points)} data points.")
