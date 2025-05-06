@@ -319,9 +319,7 @@ class DeviceManager:
         for ws in sockets_to_send:
             # NO "if not ws.closed:" check here
             try:
-                logger.info(f"DM: Attempting send to WS: {ws.remote_address} with timeout...")
                 await asyncio.wait_for(ws.send(message), timeout=2.0)
-                logger.info(f"DM: Successfully sent to WS: {ws.remote_address}")
                 sent_count += 1
             except asyncio.TimeoutError:
                 logger.error(f"DM: Timeout sending message to WS: {ws.remote_address}")

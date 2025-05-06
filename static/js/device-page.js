@@ -30,7 +30,7 @@ class DevicePage {
         api.onWebSocketEvent('close', () => console.log('WS Connection Closed - Device Page'));
         api.onWebSocketEvent('error', (err) => console.error('WS Error - Device Page:', err));
         api.onWebSocketEvent('device_connection', this.handleDeviceStatusUpdate.bind(this));
-        api.onWebSocketEvent('sensor_data', this.handleSensorDataUpdate.bind(this));
+        api.onWebSocketEvent('data_point', this.handleSensorDataUpdate.bind(this));
 
         // Ensure WebSocket connection attempt is initiated
         api.connectWebSocket(); // Explicitly call connect here just in case base.html script order changes
@@ -238,32 +238,46 @@ class DevicePage {
         }
 
         // Only display data for the currently selected device (check against IP)
+        console.log(`DP: Comparing incoming IP '${deviceIp}' with selected IP '${this.selectedDeviceIp}'`);
         if (deviceIp !== this.selectedDeviceIp) {
+            console.log('DP: Skipping data for non-selected device:', deviceIp);
             return; 
         }
+
+        console.log('DP: Formatting and appending data to output element');
         
         if (!this.elements.dataStreamOutput) return;
 
-        // Format the data point for display (keep IP in line for clarity)
-        console.log('DP: Formatting and appending data to output element');
-        const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(); 
-        const dataValue = data.values !== undefined ? data.values : data.value;
-        const keyPart = data.key ? `.${data.key}` : '';
-        const formattedData = `[${deviceIp} @ ${timestamp}] ${data.type}${keyPart}: ${JSON.stringify(dataValue)}\n`; 
+        try {
+            // Format the data point for display (keep IP in line for clarity)
+            const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString(); 
+            const dataValue = data.values !== undefined ? data.values : data.value;
+            const keyPart = data.key ? `.${data.key}` : '';
+            // Use stringify with error handling (though unlikely needed for primitive values)
+            let stringifiedValue = '(stringify error)';
+            try {
+                stringifiedValue = JSON.stringify(dataValue);
+            } catch (stringifyError) {
+                console.error("[DevicePage] JSON.stringify failed:", stringifyError, "Value was:", dataValue);
+            }
+            const formattedData = `[${deviceIp} @ ${timestamp}] ${data.type}${keyPart}: ${stringifiedValue}\n`; 
 
-        // Append to the output, managing buffer size
-        const wasScrolledToBottom = this.elements.dataStreamOutput.scrollHeight - this.elements.dataStreamOutput.clientHeight <= this.elements.dataStreamOutput.scrollTop + 1;
-        
-        this.elements.dataStreamOutput.textContent += formattedData;
+            // Append to the output, managing buffer size
+            const wasScrolledToBottom = this.elements.dataStreamOutput.scrollHeight - this.elements.dataStreamOutput.clientHeight <= this.elements.dataStreamOutput.scrollTop + 1;
+            
+            this.elements.dataStreamOutput.textContent += formattedData;
 
-        const lines = this.elements.dataStreamOutput.textContent.split('\n');
-        if (lines.length > this.maxStreamLines + 20) { // Keep buffer slightly larger than max
-            this.elements.dataStreamOutput.textContent = lines.slice(-this.maxStreamLines).join('\n');
-        }
+            const lines = this.elements.dataStreamOutput.textContent.split('\n');
+            if (lines.length > this.maxStreamLines + 20) { // Keep buffer slightly larger than max
+                this.elements.dataStreamOutput.textContent = lines.slice(-this.maxStreamLines).join('\n');
+            }
 
-        // Auto-scroll to bottom only if already near the bottom
-        if (wasScrolledToBottom) {
-            this.elements.dataStreamOutput.scrollTop = this.elements.dataStreamOutput.scrollHeight;
+            // Auto-scroll to bottom only if already near the bottom
+            if (wasScrolledToBottom) {
+                this.elements.dataStreamOutput.scrollTop = this.elements.dataStreamOutput.scrollHeight;
+            }
+        } catch (error) {
+             console.error("[DevicePage] Error updating UI in handleSensorDataUpdate:", error, "Data was:", sensorUpdate);
         }
     }
 }

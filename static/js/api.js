@@ -34,8 +34,10 @@ class API {
         };
         
         this.wsConnection.onmessage = (event) => {
+            // console.log("[API.js] onmessage received raw data:", event.data);
             try {
                 const data = JSON.parse(event.data);
+                // console.log("[API.js] onmessage parsed data:", data); // Re-enabled log
                 this._notifyCallbacks('data_point', data);
             } catch (error) {
                 console.error('Error parsing WebSocket message:', error);
