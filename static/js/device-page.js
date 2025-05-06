@@ -30,7 +30,7 @@ class DevicePage {
         api.onWebSocketEvent('close', () => console.log('WS Connection Closed - Device Page'));
         api.onWebSocketEvent('error', (err) => console.error('WS Error - Device Page:', err));
         api.onWebSocketEvent('device_connection', this.handleDeviceStatusUpdate.bind(this));
-        api.onWebSocketEvent('data_point', this.handleSensorDataUpdate.bind(this));
+        api.onWebSocketEvent('sensor_data', this.handleSensorDataUpdate.bind(this));
 
         // Ensure WebSocket connection attempt is initiated
         api.connectWebSocket(); // Explicitly call connect here just in case base.html script order changes
@@ -204,6 +204,8 @@ class DevicePage {
     handleSensorDataUpdate(sensorUpdate) {
         const deviceIp = sensorUpdate.device; // Expecting IP address here now
         const data = sensorUpdate.data;
+
+        console.warn('Received sensor_data message:', sensorUpdate);
         
         if (!deviceIp || !data) {
             console.warn('Received sensor_data message missing device IP or data.', sensorUpdate);

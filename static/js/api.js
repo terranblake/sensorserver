@@ -13,7 +13,8 @@ class API {
             'error': [],
             'open': [],
             'close': [],
-            'inference_complete': []
+            'inference_complete': [],
+            'sensor_data': []
         };
     }
 
@@ -38,9 +39,9 @@ class API {
             // console.log("[API.js] onmessage received raw data:", event.data);
             try {
                 const data = JSON.parse(event.data);
-                // console.log("[API.js] onmessage parsed data:", data); // Re-enabled log
+                console.log("[API.js] onmessage parsed data:", data); // Re-enabled log
                 const eventType = data.type || 'data_point'; // Determine event type from message, default if missing
-                // console.log(`[API.js] Notifying callbacks for event type: '${eventType}'`, data); // REMOVED LOG
+                console.log(`[API.js] Determined eventType: '${eventType}'. Notifying callbacks...`); // Re-added LOG
                 this._notifyCallbacks(eventType, data);
             } catch (error) {
                 console.error('Error parsing WebSocket message:', error);
@@ -72,9 +73,13 @@ class API {
      * @param {Function} callback - Function to call when event occurs
      */
     onWebSocketEvent(event, callback) {
-        if (this.wsCallbacks[event]) {
-            this.wsCallbacks[event].push(callback);
+        // Ensure the array for this event type exists
+        if (!this.wsCallbacks[event]) {
+            console.log(`[API.js] Creating new callback array for event type: '${event}'`); // Log creation
+            this.wsCallbacks[event] = [];
         }
+        // Now push the callback
+        this.wsCallbacks[event].push(callback);
     }
     
     /**
@@ -96,8 +101,10 @@ class API {
      * @private
      */
     _notifyCallbacks(event, data) {
-        // console.log(`[API.js] Inside _notifyCallbacks for event: '${event}'`); // REMOVED LOG
+        console.log(`[API.js] Inside _notifyCallbacks for event: '${event}'`); // Re-added LOG
         if (this.wsCallbacks[event]) {
+            // Log the callbacks array before iterating
+            console.log(`[API.js] Callbacks found for '${event}':`, this.wsCallbacks[event], `(Count: ${this.wsCallbacks[event].length})`); // ADDED LOG
             this.wsCallbacks[event].forEach(callback => {
                 try {
                     callback(data);
